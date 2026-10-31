@@ -481,6 +481,22 @@ class UiaSession:
             return None
         return self._track(int(out.value))
 
+    def element_from_point(self, x: int, y: int) -> Element | None:
+        """返回屏幕物理坐标下最上层的 UIA 元素（只读；不点击）。"""
+        point = wintypes.POINT(int(x), int(y))
+        out = ctypes.c_void_p()
+        hr = _call(
+            self._automation,
+            7,  # IUIAutomation::ElementFromPoint
+            ctypes.c_long,
+            [wintypes.POINT, ctypes.POINTER(ctypes.c_void_p)],
+            point,
+            ctypes.byref(out),
+        )
+        if _hr_failed(hr) or not out.value:
+            return None
+        return self._track(int(out.value))
+
     def _condition_for_control_type(self, control_type: int) -> int:
         variant = VARIANT()
         variant.vt = VT_I4

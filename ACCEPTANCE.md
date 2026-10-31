@@ -7,7 +7,7 @@
 ## 0. 前置
 
 - [ ] Windows 10/11 x64，Python 3.11+，`py -3.13 -m pip install -r requirements.txt`
-- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 57 个测试，0 失败）
+- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 61 个测试，0 失败）
 - [ ] `build.bat` 成功，生成 `dist\LoginAssistant.exe`
 - [ ] 准备一个**测试账号**（不要用主账号），或使用 `tools\mock_login.py` 作为安全靶子
 
@@ -154,6 +154,9 @@ Get-ChildItem -Path $root -Recurse -File |
 - [ ] 目标不存在/最小化/禁用 → 明确提示，不发送输入
 - [ ] 目标完整性更高 → 提示“请以管理员身份运行本工具”，不静默失败
 - [ ] 目标已在前台 → `focus_window` 直接成功；否则 AttachThreadInput + SetForegroundWindow + 校验
+- [ ] 登录期间主窗口自动最小化，结果对话框出现前恢复
+- [ ] 点击前坐标校验：校准点落在其他窗口/按钮/链接时明确报错，不发送点击
+- [ ] 点击/输入后若前台被抢占，工具先尝试重新聚焦；失败时结果详情显示实际抢占窗口标题/类名/PID
 - [ ] UIA 模式：诊断 UIA 探测显示 2 个 Edit（1 个 IsPassword=True）和登录按钮
 - [ ] 校准模式：依次点击 3 个点，保存后能正确定位
 - [ ] 校准后窗口尺寸变化 → 提示重新校准，不瞎点

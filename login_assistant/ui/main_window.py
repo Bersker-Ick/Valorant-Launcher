@@ -12,6 +12,7 @@ from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -332,7 +333,8 @@ class MainWindow(QMainWindow):
 
         hint = HintLabel(
             "盲填模式：密码框不可读，工具只负责输入并观察窗口状态；"
-            "失败最多自动重试 1 次，最终请手动确认。"
+            "失败最多自动重试 1 次，最终请手动确认。\n"
+            "登录期间主窗口会自动最小化，避免和登录器抢前台；结果出来后恢复。"
         )
         card.add(hint)
         return card
@@ -770,6 +772,11 @@ class MainWindow(QMainWindow):
             record.id,
             options.max_attempts,
         )
+        # 主窗口在前台会与目标抢焦点（Windows 前台锁可能把焦点还给本程序）。
+        # 输入期间最小化，让目标稳定处于前台；结果对话框出现前再恢复。
+        self.showMinimized()
+        QApplication.processEvents()
+        LOGGER.info("登录期间主窗口已最小化，避免与目标窗口抢前台")
         worker.start()
 
     def _set_busy(self, busy: bool) -> None:
@@ -815,8 +822,18 @@ class MainWindow(QMainWindow):
             report.events_failed,
             report.duration_s,
         )
+        self._restore_after_login()
         self.login_status.setText(report.headline)
         self._show_report_dialog(report)
+
+    def _restore_after_login(self) -> None:
+        try:
+            if self.isMinimized():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
 
     def _show_report_dialog(self, report: AutomationReport) -> None:
         box = QMessageBox(self)
@@ -861,6 +878,7 @@ class MainWindow(QMainWindow):
     def _on_login_finished(self) -> None:
         self._login_worker = None
         self._cancel_event = None
+        self._restore_after_login()
         self._set_busy(False)
         self.refresh_target()
         self.login_status.setText("登录流程已结束。请根据结果手动确认。")

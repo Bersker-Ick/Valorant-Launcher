@@ -144,7 +144,7 @@ py -3.13 -m unittest discover -s tests -v
 ### 实现
 
 - `requirements.txt`：仅 `PySide6`；PyInstaller 仅构建期。
-- `build.bat`：依赖检查（已安装则跳过网络）→ 57 个测试 → `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
+- `build.bat`：依赖检查（已安装则跳过网络）→ 61 个测试（PR5 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
 - `LoginAssistant.spec`：在 Analysis 后按文件名过滤 `opengl32sw.dll`、QtQuick/Qml/Pdf/Network/OpenGL/Svg、翻译、图片格式/样式/TLS 插件等，仅保留 QtCore/QtGui/QtWidgets、qwindows/qoffscreen 平台插件与 Python 运行库。
 - `assets/app.ico` / `assets/app.png`：QPainter 生成的多尺寸图标。
 - `build_support/version_info.txt`：产品名/版本/说明。
@@ -191,6 +191,8 @@ QT_QPA_PLATFORM=offscreen dist\LoginAssistant.exe --smoke-test
 | 1 | `stage-1-core-storage-input` | [#1](https://github.com/Bersker-Ick/Valorant-Launcher/pull/1) |
 | 2 | `stage-2-login-flow` | [#2](https://github.com/Bersker-Ick/Valorant-Launcher/pull/2) |
 | 3 | `stage-3-packaging-docs` | [#3](https://github.com/Bersker-Ick/Valorant-Launcher/pull/3) |
+| 3 后修复 | `fix/selftest-triple-click` | [#4](https://github.com/Bersker-Ick/Valorant-Launcher/pull/4) |
+| 3 后修复 | `fix/foreground-recovery` | [#5](https://github.com/Bersker-Ick/Valorant-Launcher/pull/5) |
 
 > PR 使用堆叠分支（stage-2 基于 stage-1，stage-3 基于 stage-2），便于逐阶段审查；合并顺序 1 → 2 → 3。
 
@@ -227,3 +229,54 @@ dist\LoginAssistant.exe --smoke-test
 - **修复**：`run_notepad_selftest`/`automation` 的字段点击改为三击（选中整段/整行），随后仍发送 Ctrl+A + Backspace + Delete 双保险；仅影响自检/输入前的清空，不改变判定、重试上限或安全边界。
 - **验证**：单元测试通过；未再进行桌面注入验证。用户可在记事本自检中观察“实际”是否完全等于 `Abc123!@#`。
 - PR：[#4](https://github.com/Bersker-Ick/Valorant-Launcher/pull/4)
+
+---
+
+## 后续修复（PR #5）— 前台焦点误判
+
+### 用户反馈
+
+目标「无畏契约登录器」（`Chrome_WidgetWin_1`，完整性高）点击“自动登录”后提示“目标窗口失去前台焦点”，
+但用户没有操作前台。用户同时强调：密码必须用模拟键盘输入，不能复制粘贴。
+
+### 日志证据
+
+`%LOCALAPPDATA%\LoginAssistant\logs\app.log`：
+
+```text
+01:24:51 目标窗口：无畏契约登录器 (0x450CF6, PID 19840)
+01:24:51 完整性级别：本工具=高 (High / 管理员)，目标=高 (High / 管理员)
+01:24:51 已获取目标窗口焦点
+01:24:51 定位方式：校准坐标，按钮：校准坐标
+01:24:51 已点击账号框 (1911, 581)
+01:24:52 账号输入完成（9 个字符）
+01:24:53 登录中止：foreground_lost
+01:25:10 第二次：校准账号点改为 (1487,484)，6 个鼠标事件后 foreground_lost
+```
+
+- 双方都是高完整性，**不是 UIPI**。
+- 第一次账号已输入 9 个字符，说明点击和扫描码输入有效；失败发生在输入后对 `GetForegroundWindow` 的**一次性**严格校验。
+- 旧逻辑在点击/输入后只检查一次前台；Windows 前台锁可能把焦点还给刚最小化/后台的本工具或其他窗口，导致误判。
+- 第二次校准账号点与密码点 x 几乎相同（1487 vs 1485），且只发送了三击就丢失前台，提示校准点可能落在错误控件或窗口。
+
+### 修复
+
+1. **登录期间主窗口最小化**：避免本工具与目标抢前台；`_on_login_result` 前恢复。这是最可能直接解决“用户没动却被判丢失”的原因。
+2. **点击前坐标校验**：
+   - `WindowFromPoint` 根窗口必须是目标，否则报“校准坐标当前不在目标窗口上”，不点击；
+   - UIA `ElementFromPoint` 只读检查控件类型；账号/密码点落 Button/Hyperlink/Text 等、登录点落 Edit 时报错。
+3. **前台丢失恢复**：`ensure_foreground` 先等待/重新聚焦；失败时结果详情显示实际抢占窗口的标题/类名/PID，而不是笼统说“前台已改变”。
+4. **校准模式单击**：UIA 模式仍三击（已知 Edit，安全）；校准模式改为单击 + Ctrl+A/Backspace/Delete，降低三击误触链接/按钮的概率。
+5. 新增 4 个单元测试：根窗口校验、UIA 控件类型校验、前台 root 匹配、抢占错误信息。共 **61 tests OK**。
+
+### 密码输入
+
+- 始终使用 `SendInput` + `KEYEVENTF_SCANCODE` 逐字符输入；**不使用剪贴板**。
+- 密码框内容从不读取；输入后 `bytearray` 覆写。
+- 本次旧日志中密码尚未输入（在账号输入后的前台校验就中止了）。
+
+### 验证状态
+
+- 61 个单元测试通过；离屏 UI 冒烟通过。
+- **未**在用户桌面执行真实点击/输入（用户要求停止桌面控制）；需要用户用新 EXE 复测。
+- 复测时若仍失败，结果详情会包含：点击前坐标落在哪个窗口/控件、抢占窗口的标题/类名/PID、是否成功重新聚焦。把该详情/日志发来即可继续定位。
