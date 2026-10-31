@@ -124,6 +124,8 @@ class FieldPlan:
     password_element: Element | None = None
     button_element: Element | None = None
     expected_account_len: int | None = None
+    account_hwnd: int = 0
+    password_hwnd: int = 0
 
 
 def _log_step(steps: list[str], progress: Callable[[str], None] | None, message: str) -> None:
@@ -428,12 +430,16 @@ def _snapshot(
                 pass
         if plan.account_element is not None and not plan.account_element.is_password:
             account_len = _read_account_length(plan.account_element)
+        elif plan.account_hwnd:
+            text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
+            if text is not None:
+                account_len = len(text)
     return UiSnapshot(
         at=now,
         window_exists=True,
         title=info.title,
         minimized=winapi.is_minimized(hwnd),
-        foreground=winapi.get_foreground_window() == hwnd,
+        foreground=winapi.foreground_matches(hwnd),
         button_found=button_found,
         button_enabled=button_enabled,
         account_len=account_len,
@@ -496,8 +502,15 @@ WRONG_CONTROL_TYPES = {
     50029,  # DataItem
 }
 
+GWL_STYLE = -16
+GWL_EXSTYLE = -20
+WS_DISABLED = 0x08000000
+WS_EX_NOACTIVATE = 0x08000000
+ES_PASSWORD = 0x0020
+ES_READONLY = 0x0800
 
-def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, steps: list[str]) -> None:
+
+def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, steps: list[str]) -> winapi.PointWindowInfo:
     """点击前确认坐标属于目标登录器，或其子进程的登录组件。
 
     腾讯/部分登录器会把真正的输入框放到子进程（例如 TASLogin64.exe）；
@@ -558,6 +571,7 @@ def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, ste
         f"点击前检查 {label}: 坐标 {point} → {under.child_class or '未知控件'} / "
         f"{relationship} {winapi.process_label(root.pid)} hwnd=0x{root.hwnd:X}",
     )
+    return under
 
 
 def _validate_control_under_point(
@@ -601,6 +615,55 @@ def _validate_control_under_point(
                     )
                 if kind == "password" and not info.is_password:
                     _log_step(steps, None, "UIA 未把密码框标记为 IsPassword；按坐标继续，但请留意焦点")
+
+            # 原生 Edit：检查 ES_PASSWORD/ES_READONLY/禁用位。只读密码框无论
+            # 怎样 SendInput 都不会接收字符，必须明确告诉用户。
+            native = info.native_window_handle
+            if native:
+                style = int(winapi.USER32.GetWindowLongW(native, GWL_STYLE)) & 0xFFFFFFFF
+                exstyle = int(winapi.USER32.GetWindowLongW(native, GWL_EXSTYLE)) & 0xFFFFFFFF
+                is_pwd_style = bool(style & ES_PASSWORD)
+                readonly = bool(style & ES_READONLY)
+                disabled = bool(style & WS_DISABLED) or not info.is_enabled
+                noactivate = bool(exstyle & WS_EX_NOACTIVATE)
+                _log_step(
+                    steps,
+                    None,
+                    f"{label} 原生样式：ES_PASSWORD={is_pwd_style} readonly={readonly} "
+                    f"disabled={disabled} NOACTIVATE={noactivate}",
+                )
+                if noactivate:
+                    _log_step(
+                        steps,
+                        None,
+                        f"{label}带 WS_EX_NOACTIVATE；可能无法通过鼠标/SetForegroundWindow 获得键盘焦点",
+                    )
+                if disabled:
+                    raise AutomationError(
+                        "field_disabled",
+                        f"{label}处于禁用状态",
+                        "输入框当前不可用；请等待登录器加载完成，或重新校准。",
+                    )
+                if readonly:
+                    raise AutomationError(
+                        "field_readonly",
+                        f"{label}是只读控件",
+                        f"{label}（hwnd=0x{native:X}）带 ES_READONLY 样式，模拟键盘无法输入。\n"
+                        "这不是输入层失败；请手动填写该字段，或检查登录器是否尚未解锁输入。",
+                    )
+                if kind == "account" and is_pwd_style:
+                    raise AutomationError(
+                        "point_wrong_control",
+                        "账号框坐标落在密码控件上",
+                        "该控件带 ES_PASSWORD 样式，请重新校准账号框。",
+                    )
+                if kind == "password" and not (is_pwd_style or info.is_password):
+                    _log_step(
+                        steps,
+                        None,
+                        "密码控件既没有 ES_PASSWORD 也没有 UIA IsPassword；"
+                        "可能是自绘/安全控件，继续尝试但可能拒绝注入",
+                    )
         elif kind == "login":
             if control_type in {50004, 50002, 50013}:  # Edit / CheckBox / RadioButton
                 raise AutomationError(
@@ -641,14 +704,14 @@ def _click_field(
     clicks: int = 1,
     session: UiaSession | None = None,
     kind: str = "field",
-) -> None:
+) -> int:
     if not _in_virtual_screen(point):
         raise AutomationError(
             "invalid_coordinates",
             "输入框坐标无效",
             f"{label}的坐标 {point} 不在虚拟桌面范围内，可能是窗口已最小化/移动。",
         )
-    _validate_point_on_target(hwnd, point, label, steps)
+    under = _validate_point_on_target(hwnd, point, label, steps)
     _validate_control_under_point(session, point, kind, label, steps)
     result = sender.click_screen(point[0], point[1], clicks=clicks)
     if not result.ok:
@@ -666,6 +729,33 @@ def _click_field(
         )
     if report.recovered:
         _log_step(steps, None, f"点击{label}后前台曾被抢占；{report.detail}")
+
+    expected_hwnd = 0
+    if element is not None:
+        try:
+            expected_hwnd = int(element.native_window_handle or 0)
+        except Exception:
+            expected_hwnd = 0
+    if not expected_hwnd:
+        expected_hwnd = int(under.child_hwnd or 0)
+
+    if expected_hwnd and not winapi.control_has_focus(expected_hwnd):
+        focus_report = winapi.focus_control(expected_hwnd, timeout_ms=800)
+        if not focus_report.ok:
+            raise AutomationError(
+                "focus_wrong_field",
+                "无法把焦点放到目标输入框",
+                f"点击{label}后，控件 hwnd=0x{expected_hwnd:X} 没有获得键盘焦点。\n"
+                f"{focus_report.message}\n"
+                "这通常意味着该控件是只读/自绘/安全控件，或点击被透明层拦截。\n"
+                "请重新校准；如果仍失败，请尝试手动填写该字段。",
+            )
+        _log_step(
+            steps,
+            None,
+            f"点击{label}后焦点未落在目标控件，已强制聚焦 hwnd=0x{expected_hwnd:X}",
+        )
+
     if element is not None:
         try:
             element.set_focus()
@@ -685,7 +775,14 @@ def _click_field(
                     "焦点不在目标窗口",
                     f"点击{label}后焦点落在其它窗口（{info.detail}），已中止。",
                 )
-    _log_step(steps, None, f"已点击{label} ({point[0]}, {point[1]})")
+    _log_step(
+        steps,
+        None,
+        f"已点击{label} ({point[0]}, {point[1]})，焦点控件=0x{expected_hwnd:X}"
+        if expected_hwnd
+        else f"已点击{label} ({point[0]}, {point[1]})",
+    )
+    return expected_hwnd
 
 
 def run_login(request: AutomationRequest) -> AutomationReport:
@@ -801,7 +898,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                 account_payload = bytearray(account_keep)
                 baseline = _snapshot(session, request.hwnd, plan)
 
-                _click_field(
+                plan.account_hwnd = _click_field(
                     sender,
                     request.hwnd,
                     plan.account_point,
@@ -812,6 +909,8 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                     session=session,
                     kind="account",
                 )
+                if plan.account_hwnd:
+                    expected_len = len(account_keep)
                 sender.clear_field()
                 report = sender.type_bytes(account_payload, cancel=request.cancel.is_set if request.cancel else None)
                 if report.aborted:
@@ -823,6 +922,15 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                 _require_foreground(request.hwnd, "账号输入", steps)
 
                 account_len_after = _wait_account_length(plan.account_element, 0.7)
+                if account_len_after is None and plan.account_hwnd:
+                    deadline_len = time.monotonic() + 0.7
+                    while time.monotonic() < deadline_len:
+                        text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
+                        if text is not None:
+                            account_len_after = len(text)
+                            if account_len_after > 0:
+                                break
+                        time.sleep(0.12)
                 if account_len_after is not None:
                     if account_len_after == 0:
                         attempt_verdict = Verdict(
@@ -844,7 +952,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         )
 
                 if attempt_verdict is None:
-                    _click_field(
+                    plan.password_hwnd = _click_field(
                         sender,
                         request.hwnd,
                         plan.password_point,
@@ -865,20 +973,36 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                     _log_step(steps, request.progress, f"密码输入完成（{password_report.sent_chars} 个字符，内容不记录）")
                     time.sleep(0.10)
                     _require_foreground(request.hwnd, "密码输入", steps)
+                    if plan.password_hwnd and not winapi.control_has_focus(plan.password_hwnd):
+                        raise AutomationError(
+                            "focus_wrong_field",
+                            "密码框未保持键盘焦点",
+                            f"密码输入后，控件 hwnd=0x{plan.password_hwnd:X} 不再持有焦点；"
+                            "密码可能没有进入密码框。请重新校准密码框，或手动输入密码。",
+                        )
 
+                    value_len: int | None = None
                     if plan.account_element is not None:
                         try:
                             value_len = _read_account_length(plan.account_element)
-                            if value_len is not None and account_len_after is not None and value_len != account_len_after:
-                                raise AutomationError(
-                                    "focus_wrong_field",
-                                    "密码可能被输入到账号框",
-                                    "密码输入后账号框长度发生变化，焦点可能未落在密码框。为避免错误提交，已中止。",
-                                )
-                        except AutomationError:
-                            raise
                         except Exception:
-                            pass
+                            value_len = None
+                    elif plan.account_hwnd:
+                        text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
+                        if text is not None:
+                            value_len = len(text)
+                    if value_len is not None:
+                        _log_step(
+                            steps,
+                            None,
+                            f"密码输入后账号框长度={value_len}（输入账号后为 {account_len_after}）",
+                        )
+                        if account_len_after is not None and value_len != account_len_after:
+                            raise AutomationError(
+                                "focus_wrong_field",
+                                "密码可能被输入到账号框",
+                                "密码输入后账号框长度发生变化，焦点可能未落在密码框。为避免错误提交，已中止。",
+                            )
 
                     if options.input_only_no_click:
                         attempt_verdict = Verdict(
@@ -932,7 +1056,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         attempt_verdict = classify(
                             baseline,  # type: ignore[arg-type]
                             last,
-                            expected_account_len=expected_len if plan.source == "uia" else None,
+                            expected_account_len=expected_len,
                             debug_input_only=False,
                         )
                         _log_step(

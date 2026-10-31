@@ -194,6 +194,7 @@ QT_QPA_PLATFORM=offscreen dist\LoginAssistant.exe --smoke-test
 | 3 后修复 | `fix/selftest-triple-click` | [#4](https://github.com/Bersker-Ick/Valorant-Launcher/pull/4) |
 | 3 后修复 | `fix/foreground-recovery` | [#5](https://github.com/Bersker-Ick/Valorant-Launcher/pull/5) |
 | 3 后修复 | `fix/taslogin64-child-window` | [#6](https://github.com/Bersker-Ick/Valorant-Launcher/pull/6) |
+| 3 后修复 | `fix/password-focus-style-check` | [#7](https://github.com/Bersker-Ick/Valorant-Launcher/pull/7) |
 
 > PR 使用堆叠分支（stage-2 基于 stage-1，stage-3 基于 stage-2），便于逐阶段审查；合并顺序 1 → 2 → 3。
 
@@ -317,3 +318,43 @@ dist\LoginAssistant.exe --smoke-test
 - 63 个单元测试通过；离屏 UI 冒烟通过；打包后冒烟通过。
 - **未**再向用户桌面发送真实点击/键盘（遵守“不控制我电脑”）；需要用户用新 EXE 复测。
 - 当前启动器窗口客户区可能已被用户缩放（1728x1080 → 1152x720）；复测前需按当前尺寸重新校准，否则会提示 `calibration_stale`。
+
+---
+
+## 后续修复（PR #7）— 密码框焦点 / 只读 / 注入拒绝
+
+用户反馈：账号输入和点击登录都可以，但密码框一直为空。
+
+### 日志证据（01:53 一次尝试）
+
+```text
+账号框: 坐标(2014,673) → Edit / TASLogin64 PID45592 hwnd=0x5411D8
+密码框: 坐标(2007,744) → Edit / TASLogin64 PID45592 hwnd=0x90D52
+UIA 未把密码框标记为 IsPassword
+密码输入完成（10 个字符，内容不记录）
+登录按钮: Chrome_RenderWidgetHostHWND Document
+结果判定：input_rejected_suspected（重试 1 次）
+```
+
+- 账号和密码落在**两个不同**的 TASLogin64 Edit 上，坐标没有点错。
+- 旧代码只检查“前台属于 TASLogin64”，没有确认**密码 Edit 本身**获得焦点；如果点击后焦点仍在账号框，
+  密码会被输入到账号框，而密码框保持为空。
+- 也没有检查密码控件的 `ES_READONLY` / `WS_EX_NOACTIVATE`；若安全控件只读/不可激活，输入必然无效。
+
+### 修复
+
+- `focus_control` + `control_has_focus`：点击后按**具体控件 hwnd** 校验焦点；未获得时
+  AttachThreadInput + SetForegroundWindow + SetFocus 强制聚焦，失败则中止，不再继续输入。
+- 点击前记录 `ES_PASSWORD` / `ES_READONLY` / `WS_DISABLED` / `WS_EX_NOACTIVATE`；
+  只读控件直接提示“需手动输入”。
+- 密码输入后再次确认密码控件持有焦点，并读取**账号框**长度（非密码框）；
+  若账号框长度变化，说明密码误入账号框，立即中止。
+- 校准模式也通过账号框原生 hwnd 读取长度，结果判定不再只依赖 UIA。
+- 63 tests OK；无新依赖。
+
+### 结论/边界
+
+- 如果日志显示：密码控件 `readonly=False`、焦点已强制到密码 Edit、账号框长度不变、但密码框仍为空，
+  则说明 TASLogin64 的安全密码控件**拒绝了模拟输入**（可能过滤 `LLKHF_INJECTED` 或使用 Raw Input）。
+- 按项目硬性禁止项，不会 hook/驱动/绕过；此时只能手动输入密码。工具不会使用剪贴板。
+- 需要用户用新 EXE 复测，并查看诊断/日志中的“原生样式”和“焦点控件”行。

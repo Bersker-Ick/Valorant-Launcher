@@ -174,6 +174,10 @@ USER32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO
 USER32.GetGUIThreadInfo.restype = wintypes.BOOL
 USER32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 USER32.GetAncestor.restype = wintypes.HWND
+USER32.SetFocus.argtypes = [wintypes.HWND]
+USER32.SetFocus.restype = wintypes.HWND
+USER32.GetFocus.argtypes = []
+USER32.GetFocus.restype = wintypes.HWND
 USER32.IsChild.argtypes = [wintypes.HWND, wintypes.HWND]
 USER32.IsChild.restype = wintypes.BOOL
 USER32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
@@ -874,6 +878,72 @@ def target_focus_info(hwnd: int) -> TargetFocusInfo:
         focus_pid,
         f"焦点 hwnd=0x{focus:X} root=0x{root:X} pid={focus_pid}",
     )
+
+
+def control_has_focus(hwnd: int) -> bool:
+    """检查指定控件（含 TASLogin64 顶层 Edit）是否真的持有键盘焦点。"""
+    if not hwnd:
+        return False
+    root = get_root_window(hwnd)
+    fg = get_foreground_window()
+    if fg != root and get_root_window(fg) != root:
+        return False
+    tid = get_window_thread_id(hwnd)
+    focus = get_focus_hwnd_for_thread(tid)
+    if not focus:
+        return fg == hwnd
+    return focus == hwnd or bool(USER32.IsChild(hwnd, focus))
+
+
+def focus_control(hwnd: int, timeout_ms: int = 800) -> FocusReport:
+    """把键盘焦点放到指定控件（可跨进程；用于 TASLogin64 的密码 Edit）。"""
+    errors: list[str] = []
+    if not hwnd or not USER32.IsWindow(hwnd):
+        return FocusReport(False, "目标控件已不存在", errors=["IsWindow=False"])
+    if not USER32.IsWindowVisible(hwnd):
+        return FocusReport(False, "目标控件不可见", errors=["IsWindowVisible=False"])
+    if not USER32.IsWindowEnabled(hwnd):
+        return FocusReport(False, "目标控件处于禁用状态", errors=["IsWindowEnabled=False"])
+    root = get_root_window(hwnd)
+    current_tid = int(KERNEL32.GetCurrentThreadId())
+    target_tid = get_window_thread_id(root)
+    attached = False
+    set_fg = False
+    try:
+        if target_tid and target_tid != current_tid:
+            attached = bool(USER32.AttachThreadInput(current_tid, target_tid, True))
+            if not attached:
+                errors.append(f"AttachThreadInput 失败 (WinError {ctypes.get_last_error()})")
+        set_fg = bool(USER32.SetForegroundWindow(root))
+        USER32.SetActiveWindow(root)
+        USER32.SetFocus(hwnd)
+        deadline = time.monotonic() + max(0.05, timeout_ms / 1000.0)
+        while True:
+            if control_has_focus(hwnd):
+                return FocusReport(
+                    True,
+                    f"已把焦点放到控件 0x{hwnd:X}",
+                    foreground=get_foreground_window(),
+                    attached=attached,
+                    set_foreground_result=set_fg,
+                    errors=errors,
+                )
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.03)
+        fg = get_foreground_window()
+        focus = get_focus_hwnd_for_thread(target_tid)
+        return FocusReport(
+            False,
+            f"无法聚焦控件 0x{hwnd:X}（前台 0x{fg:X}，线程焦点 0x{focus:X}）",
+            foreground=fg,
+            attached=attached,
+            set_foreground_result=set_fg,
+            errors=errors,
+        )
+    finally:
+        if attached:
+            USER32.AttachThreadInput(current_tid, target_tid, False)
 
 
 # ---------------------------------------------------------------------------
