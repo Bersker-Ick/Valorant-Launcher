@@ -48,3 +48,8 @@
 | 1 | `stage-1-core-storage-input` | [#1](https://github.com/Bersker-Ick/Valorant-Launcher/pull/1) |
 | 2 | `stage-2-login-flow` | [#2](https://github.com/Bersker-Ick/Valorant-Launcher/pull/2) |
 | 3 | `stage-3-packaging-docs` | [#3](https://github.com/Bersker-Ick/Valorant-Launcher/pull/3) |
+
+## 后续修复
+
+- **PR #4**：记事本自检点击文本区改为三击，配合 Ctrl+A/Backspace/Delete 清空，降低
+  “第一次全选未生效导致测试串追加到旧内容”的误判概率。仅改自检/字段清空路径，不改变目标登录器逻辑。
