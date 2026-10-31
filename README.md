@@ -75,6 +75,7 @@
 - 类名正则：`(?i)(riot|valorant|cef|chrome_widgetwin|qt\d*|applicationframewindow|unrealwindow)`
 - 默认要求**标题和类名同时匹配**，并排除本工具自己的窗口。
 - 默认**不**匹配 Avalonia 窗口，避免把标题恰好是仓库名的源码管理工具（如 SourceGit）误认成登录器。
+- 如果你的登录器本身就是 Avalonia（类名以 `Avalonia-` 开头），请把 `avalonia` 加入类名正则，或使用“选择窗口”手动指定。
 
 正则匹配不到时，可以点击“选择窗口”手动指定。手动目标保存为“标题 + 类名 + 进程路径”签名；窗口关闭后签名失效，可重新选择或清除。
 
