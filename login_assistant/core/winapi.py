@@ -323,6 +323,92 @@ def virtual_screen_rect() -> tuple[int, int, int, int]:
 # ---------------------------------------------------------------------------
 # 进程 / 完整性级别
 # ---------------------------------------------------------------------------
+TH32CS_SNAPPROCESS = 0x00000002
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_void_p),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
+
+
+KERNEL32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+KERNEL32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+KERNEL32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+KERNEL32.Process32FirstW.restype = wintypes.BOOL
+KERNEL32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+KERNEL32.Process32NextW.restype = wintypes.BOOL
+
+
+def process_table() -> dict[int, tuple[int, str]]:
+    """返回 {pid: (parent_pid, exe_name)}；失败返回空表。"""
+    snapshot = KERNEL32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snapshot:
+        return {}
+    table: dict[int, tuple[int, str]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = KERNEL32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while ok:
+            table[int(entry.th32ProcessID)] = (int(entry.th32ParentProcessID), entry.szExeFile)
+            ok = KERNEL32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        KERNEL32.CloseHandle(snapshot)
+    return table
+
+
+def process_chain(pid: int, max_depth: int = 8) -> list[tuple[int, str]]:
+    table = process_table()
+    chain: list[tuple[int, str]] = []
+    current = int(pid)
+    for _ in range(max_depth):
+        item = table.get(current)
+        if item is None:
+            break
+        chain.append((current, item[1]))
+        current = item[0]
+        if current <= 0:
+            break
+    return chain
+
+
+def is_descendant_process(pid: int, ancestor_pid: int) -> bool:
+    """pid 是否是 ancestor_pid 的子进程（含多层），用于 TASLogin64 等登录组件。"""
+    pid, ancestor_pid = int(pid), int(ancestor_pid)
+    if pid <= 0 or ancestor_pid <= 0 or pid == ancestor_pid:
+        return False
+    table = process_table()
+    current = pid
+    for _ in range(16):
+        item = table.get(current)
+        if item is None:
+            return False
+        parent = item[0]
+        if parent <= 0:
+            return False
+        if parent == ancestor_pid:
+            return True
+        current = parent
+    return False
+
+
+def process_label(pid: int) -> str:
+    table = process_table()
+    item = table.get(int(pid))
+    name = item[1] if item else get_process_exe(pid).rsplit("\\", 1)[-1]
+    return f"{name or '未知进程'} (PID {pid})"
+
+
 def get_process_exe(pid: int) -> str:
     if pid <= 0:
         return ""
@@ -575,13 +661,27 @@ def window_at_point(x: int, y: int) -> PointWindowInfo:
 
 
 def foreground_matches(hwnd: int) -> bool:
-    """前台窗口等于目标，或目标的一个子窗口（同一根窗口）在前台。"""
+    """前台是否属于目标登录器：目标本身、同进程窗口，或目标子进程（如 TASLogin64）。
+
+    腾讯/部分登录器会把真正的输入框做成启动器的子进程窗口（TASLogin64.exe）；
+    点击输入框后 `GetForegroundWindow()` 返回的是那个 Edit 窗口，而不是启动器
+    顶层 hwnd。此时必须按进程树认可，否则会把成功点击误判为“丢失前台”。
+    """
     fg = get_foreground_window()
     if not fg:
         return False
-    if fg == int(hwnd):
+    target = int(hwnd)
+    if fg == target:
         return True
-    return get_root_window(fg) == int(hwnd)
+    if get_root_window(fg) == target:
+        return True
+    target_pid = get_window_pid(target)
+    fg_pid = get_window_pid(fg)
+    if target_pid <= 0 or fg_pid <= 0:
+        return False
+    if fg_pid == target_pid:
+        return True
+    return is_descendant_process(fg_pid, target_pid)
 
 
 def wait_for_foreground(hwnd: int, timeout_ms: int = 800) -> tuple[bool, int]:

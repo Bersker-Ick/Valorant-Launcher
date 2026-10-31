@@ -180,12 +180,14 @@ def _check_integrity(info: WindowInfo, steps: list[str]) -> None:
     )
     if target.rid is None:
         if target.error == 5:
-            raise AutomationError(
-                "integrity_unknown",
-                "无法读取目标完整性级别",
-                "打开目标进程被拒绝（WinError 5）。目标可能以更高权限运行或受保护；"
-                "请以管理员身份运行本工具后重试。",
+            _log_step(
+                steps,
+                None,
+                "目标进程受保护（WinError 5），无法读取完整性；"
+                "将在每次点击前按实际输入控件进程（如 TASLogin64.exe）校验",
             )
+            return
+        _log_step(steps, None, "无法读取目标完整性级别；继续尝试，失败时请以管理员运行")
         return
     if own.rid is not None and target.rid > own.rid:
         raise AutomationError(
@@ -446,12 +448,25 @@ def _verify_field_focus(element: Element, hwnd: int) -> None:
         native = 0
     focus = winapi.target_focus_info(hwnd)
     if native:
+        fg = winapi.get_foreground_window()
+        native_pid = winapi.get_window_pid(native)
+        target_pid = winapi.get_window_pid(hwnd)
+        # TASLogin64 等子进程的 Edit 是独立顶层窗口；点击后前台就是它本人。
+        if fg == native or (fg and winapi.get_root_window(fg) == native):
+            return
+        if native_pid == target_pid or winapi.is_descendant_process(native_pid, target_pid):
+            native_tid = winapi.get_window_thread_id(native)
+            native_focus = winapi.get_focus_hwnd_for_thread(native_tid)
+            if native_focus and (
+                native_focus == native or winapi.USER32.IsChild(native, native_focus)
+            ):
+                return
         if focus.focus_hwnd == native:
             return
         raise AutomationError(
             "focus_wrong_field",
             "焦点未落在目标输入框",
-            f"UIA 目标控件句柄=0x{native:X}，当前焦点=0x{focus.focus_hwnd:X}。\n"
+            f"UIA 目标控件句柄=0x{native:X}，当前前台=0x{fg:X}，目标线程焦点=0x{focus.focus_hwnd:X}。\n"
             "为避免把密码输入到错误位置，已中止。请重新校准或手动检查界面。",
         )
     try:
@@ -483,14 +498,30 @@ WRONG_CONTROL_TYPES = {
 
 
 def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, steps: list[str]) -> None:
-    """点击前用 WindowFromPoint 确认坐标当前确实属于目标窗口。"""
+    """点击前确认坐标属于目标登录器，或其子进程的登录组件。
+
+    腾讯/部分登录器会把真正的输入框放到子进程（例如 TASLogin64.exe）；
+    这些 Edit 不是启动器 hwnd 的子窗口，但属于同一个登录流程。只接受
+    “目标本身 / 同进程 / 目标后代进程”；无关的上层窗口仍然拒绝。
+    """
     under = winapi.window_at_point(point[0], point[1])
     root = under.root
-    if root is None or root.hwnd != int(hwnd):
+    if root is None:
+        raise AutomationError(
+            "point_not_on_target",
+            "校准坐标下没有窗口",
+            f"{label}坐标 {point} 当前没有可命中的窗口。请还原登录器后重新校准。",
+        )
+    target_pid = winapi.get_window_pid(int(hwnd))
+    accepted = root.hwnd == int(hwnd) or root.pid == target_pid
+    relationship = "目标窗口"
+    if not accepted and winapi.is_descendant_process(root.pid, target_pid):
+        accepted = True
+        relationship = f"目标子进程 {winapi.process_label(root.pid)}"
+    if not accepted:
         actual = (
-            f"{root.title!r} class={root.class_name!r} PID={root.pid} hwnd=0x{root.hwnd:X}"
-            if root is not None
-            else "无窗口"
+            f"{root.title!r} class={root.class_name!r} PID={root.pid} "
+            f"进程={winapi.process_label(root.pid)} hwnd=0x{root.hwnd:X}"
         )
         raise AutomationError(
             "point_not_on_target",
@@ -499,11 +530,33 @@ def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, ste
             "这通常是因为登录器被其他窗口遮挡、窗口移动/缩放，或校准点已过期。\n"
             "请关闭遮挡窗口、还原登录器后重新校准；工具不会在这个坐标上乱点。",
         )
+
+    # 实际接收输入的控件可能属于子进程；按它的完整性级别做 UIPI 预检。
+    own = winapi.self_integrity()
+    control_integrity = winapi.get_integrity_level(root.pid)
+    if (
+        control_integrity.rid is not None
+        and own.rid is not None
+        and control_integrity.rid > own.rid
+    ):
+        raise AutomationError(
+            "integrity",
+            "实际输入控件进程完整性级别更高",
+            f"{label}坐标落在 {winapi.process_label(root.pid)}，其完整性为 {control_integrity.label}，"
+            f"本工具为 {own.label}。\n请以管理员身份运行本工具后重试。",
+        )
+    if control_integrity.rid is None and control_integrity.error == 5:
+        _log_step(
+            steps,
+            None,
+            f"{label}坐标所在进程受保护，无法读取完整性；继续尝试，失败时请以管理员运行",
+        )
+
     _log_step(
         steps,
         None,
-        f"点击前检查 {label}: 坐标 {point} → 子窗口 {under.child_class or '未知'} / "
-        f"根窗口 {root.title!r} hwnd=0x{root.hwnd:X}",
+        f"点击前检查 {label}: 坐标 {point} → {under.child_class or '未知控件'} / "
+        f"{relationship} {winapi.process_label(root.pid)} hwnd=0x{root.hwnd:X}",
     )
 
 
@@ -622,13 +675,16 @@ def _click_field(
         _require_foreground(hwnd, f"聚焦{label}", steps)
         _verify_field_focus(element, hwnd)
     else:
-        info = winapi.target_focus_info(hwnd)
-        if info.focus_hwnd and not info.in_target:
-            raise AutomationError(
-                "focus_wrong_field",
-                "焦点不在目标窗口",
-                f"点击{label}后焦点落在其它窗口（{info.detail}），已中止。",
-            )
+        # 校准模式没有 UIA 元素；如果前台是目标本身或目标后代进程
+        # （TASLogin64 的 Edit），就认为焦点在登录流程内。
+        if not winapi.foreground_matches(hwnd):
+            info = winapi.target_focus_info(hwnd)
+            if info.focus_hwnd and not info.in_target:
+                raise AutomationError(
+                    "focus_wrong_field",
+                    "焦点不在目标窗口",
+                    f"点击{label}后焦点落在其它窗口（{info.detail}），已中止。",
+                )
     _log_step(steps, None, f"已点击{label} ({point[0]}, {point[1]})")
 
 
