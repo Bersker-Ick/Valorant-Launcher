@@ -187,6 +187,16 @@ run_dev.bat
 6. 若提示“目标程序可能拒绝了模拟输入”，请停止反复尝试，手动登录。
 7. 若提示“前台焦点被其他窗口抢占”，结果详情会显示抢占窗口的标题/类名/PID；关闭该窗口或重新校准后重试。工具会先尝试重新聚焦目标，不会直接判定是你移动了鼠标。
 
+### 5.1 密码框拒绝模拟输入时（实验）
+
+如果账号能输入、密码框有光标但始终为空，说明密码控件可能过滤了 `SendInput`。可以试 UIA 写入：
+
+1. 打开“诊断”页，点 **“密码框 UIA 写入探测”**。它只检查 ValuePattern 是否可用/是否只读，**不读取也不写入密码**。
+2. 若结果显示“可写”，到“设置 → 输入”勾选 **“密码用 UIA ValuePattern 写入（实验，非键盘）”** 并保存。
+3. 重新自动登录。
+
+注意：这不是键盘模拟，而是通过 Windows 无障碍接口直接写控件；控件可能拒绝，失败会明确报错。密码值不会写入日志。若探测显示“不支持/只读”，只能手动输入密码。该方式可能触及启动器/游戏的自动化条款，风险自负。
+
 ### 6. 调试开关
 
 - **仅输入不点击**：输入账号与密码，但不点击登录按钮、也不自动重试。仍会点击输入框用于定位；用于确认“输入层是否正常”。
@@ -207,6 +217,7 @@ run_dev.bat
 | `window_match.require_both` | 是否要求标题和类名同时匹配 |
 | `input.delay_min_ms` / `delay_max_ms` | 每字符随机间隔（0~1000 ms） |
 | `input.block_input` | 是否在输入期间 BlockInput |
+| `input.password_use_uia` | 密码用 UIA ValuePattern 写入（实验，非键盘） |
 | `input.auto_enter` | 找不到登录按钮时是否用 Enter 提交 |
 | `input.input_only_no_click` | “仅输入不点击”调试开关 |
 | `input.verify_wait_ms` | 提交后观察窗口状态的时间（800~15000 ms） |
@@ -230,7 +241,7 @@ build.bat
 脚本会：
 
 1. 检查/安装 PySide6 与 PyInstaller（依赖已安装时跳过网络安装）；
-2. 运行 63 个单元测试；
+2. 运行 65 个单元测试；
 3. 使用 `LoginAssistant.spec` 以 `--onefile --windowed` 打包，并过滤掉未使用的 Qt DLL/插件
    （`opengl32sw.dll`、QtQuick/Qml/Pdf/Network、翻译、图片格式插件等）；
 4. 用 `QT_QPA_PLATFORM=offscreen` 对打包后的 EXE 做离屏冒烟测试；
@@ -376,7 +387,7 @@ tools/
   selftest_input.py      命令行自检（需要可用的前台桌面）
   mock_login.py          本机 Win32 模拟登录窗口（仅开发测试）
   ui_snapshot.py         离屏 UI 截图（不显示窗口）
-tests/                   63 个单元测试
+tests/                   65 个单元测试
 LoginAssistant.spec      PyInstaller 打包配置（过滤未使用 Qt DLL/插件）
 build.bat / run_dev.bat / run_tests.bat
 ```

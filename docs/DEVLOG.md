@@ -144,7 +144,7 @@ py -3.13 -m unittest discover -s tests -v
 ### 实现
 
 - `requirements.txt`：仅 `PySide6`；PyInstaller 仅构建期。
-- `build.bat`：依赖检查（已安装则跳过网络）→ 63 个测试（PR6 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
+- `build.bat`：依赖检查（已安装则跳过网络）→ 65 个测试（PR8 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
 - `LoginAssistant.spec`：在 Analysis 后按文件名过滤 `opengl32sw.dll`、QtQuick/Qml/Pdf/Network/OpenGL/Svg、翻译、图片格式/样式/TLS 插件等，仅保留 QtCore/QtGui/QtWidgets、qwindows/qoffscreen 平台插件与 Python 运行库。
 - `assets/app.ico` / `assets/app.png`：QPainter 生成的多尺寸图标。
 - `build_support/version_info.txt`：产品名/版本/说明。
@@ -195,6 +195,7 @@ QT_QPA_PLATFORM=offscreen dist\LoginAssistant.exe --smoke-test
 | 3 后修复 | `fix/foreground-recovery` | [#5](https://github.com/Bersker-Ick/Valorant-Launcher/pull/5) |
 | 3 后修复 | `fix/taslogin64-child-window` | [#6](https://github.com/Bersker-Ick/Valorant-Launcher/pull/6) |
 | 3 后修复 | `fix/password-focus-style-check` | [#7](https://github.com/Bersker-Ick/Valorant-Launcher/pull/7) |
+| 3 后功能 | `feat/uia-password-write` | [#8](https://github.com/Bersker-Ick/Valorant-Launcher/pull/8) |
 
 > PR 使用堆叠分支（stage-2 基于 stage-1，stage-3 基于 stage-2），便于逐阶段审查；合并顺序 1 → 2 → 3。
 
@@ -358,3 +359,33 @@ UIA 未把密码框标记为 IsPassword
   则说明 TASLogin64 的安全密码控件**拒绝了模拟输入**（可能过滤 `LLKHF_INJECTED` 或使用 Raw Input）。
 - 按项目硬性禁止项，不会 hook/驱动/绕过；此时只能手动输入密码。工具不会使用剪贴板。
 - 需要用户用新 EXE 复测，并查看诊断/日志中的“原生样式”和“焦点控件”行。
+
+---
+
+## 后续功能（PR #8）— UIA ValuePattern 密码写入
+
+用户确认密码框有光标但拒绝 SendInput；在硬件 HID 之外，增加最后一条纯软件路径。
+
+### 实现
+
+- `core/uia.py`：封装 `IUIAutomationValuePattern`：
+  - `GetCurrentPattern(UIA_ValuePatternId=10002)`（vtable 16）
+  - `get_CurrentIsReadOnly`（vtable 5）
+  - `SetValue`（vtable 3）
+  - 只读探测不读取 ValuePattern 的值。
+- `uia.probe_password_value(point)`：诊断用，只返回控件信息和 ValuePattern 能力。
+- 诊断页“密码框 UIA 写入探测”：按当前校准密码点探测；窗口尺寸变化时拒绝探测。
+- 设置 → 输入“密码用 UIA ValuePattern 写入（实验，非键盘）”，默认关闭；配置字段 `input.password_use_uia`。
+- 登录流程：账号仍 SendInput；密码框点击/聚焦后，若开启则 `SetValue` 写密码，再点击登录；失败明确报错，不静默回退。
+- 密码不写日志；写入后 `bytearray` 覆写；UIA/BSTR 生命周期不可完全控制。
+
+### 验证/边界
+
+- 新增配置 roundtrip 测试；共 **65 tests OK**；离屏实例化设置/诊断面板通过。
+- 未在真实 TASLogin64 上验证 UIA 写入（不能控制用户桌面）；需要用户先点探测，再决定是否勾选。
+- 若控件不支持/只读/SetValue 被拒，仍然只能手动输入密码；这不是键盘模拟，也可能触及游戏/启动器自动化条款。
+
+### 已知风险
+
+- `ValuePattern.SetValue` 可能只更新可访问性值，不触发控件自身的输入校验/按钮状态；需要实测登录结果。
+- 密码字符串会以 BSTR 形式短暂存在于 UIA 调用栈/目标进程；工具不读取它，但无法保证目标进程不缓存。

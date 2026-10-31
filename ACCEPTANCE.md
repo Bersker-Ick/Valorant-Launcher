@@ -7,7 +7,7 @@
 ## 0. 前置
 
 - [ ] Windows 10/11 x64，Python 3.11+，`py -3.13 -m pip install -r requirements.txt`
-- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 63 个测试，0 失败）
+- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 65 个测试，0 失败）
 - [ ] `build.bat` 成功，生成 `dist\LoginAssistant.exe`
 - [ ] 准备一个**测试账号**（不要用主账号），或使用 `tools\mock_login.py` 作为安全靶子
 
@@ -167,6 +167,8 @@ Get-ChildItem -Path $root -Recurse -File |
 - [ ] 只读密码框 → 明确提示“只读控件，需手动输入”，不继续盲目点击
 - [ ] 密码输入后检查账号框长度未变化（避免密码误入账号框）
 - [ ] 若密码框仍为空但焦点/样式正常，结论为控件拒绝模拟输入；按限制手动输入
+- [ ] “密码框 UIA 写入探测”只读显示 ValuePattern 可用/只读，不读取/写入密码值
+- [ ] 勾选 UIA 写入后，探测为“可写”时能写入密码；不支持/只读时明确报错，不静默回退
 - [ ] 输入账号 → 密码 → 点击登录/Enter；事件表每条返回 1
 - [ ] 输入后密码 `bytearray` 被覆写（代码审查 + 无法从日志/内存转储轻易确认，尽力而为）
 - [ ] 可选 BlockInput：输入期间物理键鼠被屏蔽，结束后恢复；异常路径也能恢复
