@@ -230,7 +230,7 @@ build.bat
 脚本会：
 
 1. 检查/安装 PySide6 与 PyInstaller（依赖已安装时跳过网络安装）；
-2. 运行 61 个单元测试；
+2. 运行 63 个单元测试；
 3. 使用 `LoginAssistant.spec` 以 `--onefile --windowed` 打包，并过滤掉未使用的 Qt DLL/插件
    （`opengl32sw.dll`、QtQuick/Qml/Pdf/Network、翻译、图片格式插件等）；
 4. 用 `QT_QPA_PLATFORM=offscreen` 对打包后的 EXE 做离屏冒烟测试；
@@ -277,6 +277,7 @@ py -3.13 -m unittest discover -s tests -v
 | 找不到窗口 | 正则不匹配；类名不同；窗口被 DWM cloak；多候选 | 用“设置 → 测试规则”查看命中；改用“选择窗口”手动指定；确认登录器在前台且可见 |
 | 找到了但点“自动登录”没反应 | 目标最小化/禁用/hung；焦点被抢；工具被 UIPI 拦截 | 还原窗口；关闭全屏游戏/前台锁；查看诊断面板与日志 |
 | 提示“前台焦点被其他窗口抢占” | 主窗口/其他应用/CEF 弹层短暂抢焦点；校准点落在错误控件 | 工具会先尝试重新聚焦，并在结果详情显示抢占窗口的标题/类名/PID；登录期间主窗口会自动最小化；关闭抢占窗口或重新校准 |
+| 提示“校准坐标当前不在目标窗口上” | 坐标落在无关窗口/控件；登录器被遮挡或窗口尺寸变化 | 新版会接受目标子进程（如腾讯 `TASLogin64.exe`）里的 Edit；若仍报错，关闭遮挡窗口、还原登录器尺寸后重新校准 |
 | 完整性级别高于本工具 | 登录器以管理员/更高完整性运行 | 右键“以管理员身份运行”本工具；若仍失败，目标可能是受保护进程 |
 | `SendInput` 返回 0，`GetLastError=5` | UIPI 权限不足 | 以管理员身份运行；检查目标完整性级别 |
 | `SendInput` 返回 1，但账号框无任何字符 | 目标装了低级键盘钩子并检查 `LLKHF_INJECTED`；焦点不对；IME/自绘控件；键盘布局不匹配 | 先做记事本自检；确认焦点；检查 IME；用 UIA 探测看控件；校准；不要反复尝试 |
@@ -373,7 +374,7 @@ tools/
   selftest_input.py      命令行自检（需要可用的前台桌面）
   mock_login.py          本机 Win32 模拟登录窗口（仅开发测试）
   ui_snapshot.py         离屏 UI 截图（不显示窗口）
-tests/                   61 个单元测试
+tests/                   63 个单元测试
 LoginAssistant.spec      PyInstaller 打包配置（过滤未使用 Qt DLL/插件）
 build.bat / run_dev.bat / run_tests.bat
 ```

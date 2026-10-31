@@ -118,6 +118,57 @@ class AutomationHelperTest(unittest.TestCase):
         # 登录按钮点落在 Button 上是合法的
         _validate_control_under_point(FakeSession(), (5, 5), "login", "登录按钮", [])  # type: ignore[arg-type]
 
+    def test_point_validation_accepts_target_child_process(self) -> None:
+        # 腾讯 TASLogin64.exe 是启动器的子进程；输入框是它自己的顶层 Edit。
+        originals = (
+            winapi.window_at_point,
+            winapi.is_descendant_process,
+            winapi.self_integrity,
+            winapi.get_integrity_level,
+            winapi.get_window_pid,
+        )
+        try:
+            root = WindowInfo(hwnd=20, title="", class_name="Edit", pid=200)
+            winapi.window_at_point = lambda _x, _y: winapi.PointWindowInfo(  # type: ignore[assignment]
+                20, 20, "Edit", root,
+            )
+            winapi.is_descendant_process = lambda pid, ancestor: pid == 200 and ancestor == 100  # type: ignore[assignment]
+            winapi.get_window_pid = lambda hwnd: 100 if hwnd == 10 else 200  # type: ignore[assignment]
+            winapi.self_integrity = lambda: winapi.IntegrityInfo(0x3000, "高")  # type: ignore[assignment]
+            winapi.get_integrity_level = lambda pid: winapi.IntegrityInfo(0x3000, "高")  # type: ignore[assignment]
+            steps: list[str] = []
+            _validate_point_on_target(10, (5, 5), "账号框", steps)
+            self.assertTrue(any("目标子进程" in item for item in steps))
+        finally:
+            (
+                winapi.window_at_point,
+                winapi.is_descendant_process,
+                winapi.self_integrity,
+                winapi.get_integrity_level,
+                winapi.get_window_pid,
+            ) = originals
+
+    def test_foreground_matches_descendant_process(self) -> None:
+        originals = (
+            winapi.get_foreground_window,
+            winapi.get_root_window,
+            winapi.get_window_pid,
+            winapi.is_descendant_process,
+        )
+        try:
+            winapi.get_foreground_window = lambda: 20  # type: ignore[assignment]
+            winapi.get_root_window = lambda hwnd: hwnd  # type: ignore[assignment]
+            winapi.get_window_pid = lambda hwnd: 100 if hwnd == 10 else 200  # type: ignore[assignment]
+            winapi.is_descendant_process = lambda pid, ancestor: pid == 200 and ancestor == 100  # type: ignore[assignment]
+            self.assertTrue(winapi.foreground_matches(10))
+        finally:
+            (
+                winapi.get_foreground_window,
+                winapi.get_root_window,
+                winapi.get_window_pid,
+                winapi.is_descendant_process,
+            ) = originals
+
     def test_foreground_matches_root(self) -> None:
         original_fg = winapi.get_foreground_window
         original_root = winapi.get_root_window

@@ -605,10 +605,10 @@ class MainWindow(QMainWindow):
                         "Windows UIPI 会阻止输入，请以管理员身份运行本工具后重试。"
                     )
             elif info.integrity and info.integrity.error == 5:
-                self._target_blocked = True
                 warning = (
-                    "无法读取目标进程的完整性级别（拒绝访问），目标可能以更高权限运行。\n"
-                    "请以管理员身份运行本工具后重试。"
+                    "目标进程受保护（拒绝访问），无法读取其完整性级别。\n"
+                    "工具会在每次点击前按实际输入控件进程（例如 TASLogin64.exe）校验；"
+                    "若提示权限不足，请以管理员身份运行本工具。"
                 )
             elif info.integrity and info.integrity.rid is None:
                 warning = "无法读取目标完整性级别；仍可尝试，失败时请查看诊断面板。"

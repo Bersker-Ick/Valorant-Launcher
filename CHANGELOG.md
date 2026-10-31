@@ -74,3 +74,22 @@
 
 > 真实前台注入未由代理执行（用户要求停止桌面控制）；此修复需用户用新 EXE 复测。
 > 密码仍只用 `SendInput` 扫描码逐字符输入，不使用剪贴板。
+
+## 后续修复（PR #6）— TASLogin64 子进程输入框
+
+用户复测提示“校准坐标当前不在目标窗口上”，但坐标下确实是一个 `Edit`：
+
+- 启动器进程：`D:\ACLOS\Launcher\无畏契约登录器.exe` (PID 35168, Chrome_WidgetWin_1)
+- 实际账号框：`TASLogin64.exe` (PID 45592) 的 `Edit`，其父进程正是启动器
+- 旧检查只接受根窗口 == 启动器 hwnd，误拒绝了合法的登录组件
+
+修复：
+
+- `is_descendant_process`：按 Toolhelp 进程树接受目标子进程（TASLogin64）里的控件。
+- `foreground_matches`：点击 TASLogin64 的 Edit 后 `GetForegroundWindow()` 是该 Edit，
+  不是启动器 hwnd；现在按“目标/同进程/后代进程”认可，不再误报前台丢失。
+- 点击点校验按实际输入控件进程做完整性检查；目标父进程受保护（WinError 5）时不再直接阻断。
+- `_verify_field_focus` 支持子进程原生 Edit 的焦点校验。
+- 新增 2 个单元测试（子进程坐标接受、子进程前台匹配）；共 **63 tests OK**。
+
+> 仍需用户在真实启动器上复测；密码仍用 SendInput 扫描码，不使用剪贴板。

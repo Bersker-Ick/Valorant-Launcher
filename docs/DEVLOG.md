@@ -144,7 +144,7 @@ py -3.13 -m unittest discover -s tests -v
 ### 实现
 
 - `requirements.txt`：仅 `PySide6`；PyInstaller 仅构建期。
-- `build.bat`：依赖检查（已安装则跳过网络）→ 61 个测试（PR5 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
+- `build.bat`：依赖检查（已安装则跳过网络）→ 63 个测试（PR6 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
 - `LoginAssistant.spec`：在 Analysis 后按文件名过滤 `opengl32sw.dll`、QtQuick/Qml/Pdf/Network/OpenGL/Svg、翻译、图片格式/样式/TLS 插件等，仅保留 QtCore/QtGui/QtWidgets、qwindows/qoffscreen 平台插件与 Python 运行库。
 - `assets/app.ico` / `assets/app.png`：QPainter 生成的多尺寸图标。
 - `build_support/version_info.txt`：产品名/版本/说明。
@@ -193,6 +193,7 @@ QT_QPA_PLATFORM=offscreen dist\LoginAssistant.exe --smoke-test
 | 3 | `stage-3-packaging-docs` | [#3](https://github.com/Bersker-Ick/Valorant-Launcher/pull/3) |
 | 3 后修复 | `fix/selftest-triple-click` | [#4](https://github.com/Bersker-Ick/Valorant-Launcher/pull/4) |
 | 3 后修复 | `fix/foreground-recovery` | [#5](https://github.com/Bersker-Ick/Valorant-Launcher/pull/5) |
+| 3 后修复 | `fix/taslogin64-child-window` | [#6](https://github.com/Bersker-Ick/Valorant-Launcher/pull/6) |
 
 > PR 使用堆叠分支（stage-2 基于 stage-1，stage-3 基于 stage-2），便于逐阶段审查；合并顺序 1 → 2 → 3。
 
@@ -280,3 +281,39 @@ dist\LoginAssistant.exe --smoke-test
 - 61 个单元测试通过；离屏 UI 冒烟通过。
 - **未**在用户桌面执行真实点击/输入（用户要求停止桌面控制）；需要用户用新 EXE 复测。
 - 复测时若仍失败，结果详情会包含：点击前坐标落在哪个窗口/控件、抢占窗口的标题/类名/PID、是否成功重新聚焦。把该详情/日志发来即可继续定位。
+
+---
+
+## 后续修复（PR #6）— TASLogin64 子进程输入框
+
+用户复测截图：账号坐标 (2037,675) 下明确是一个 `Edit`，但旧版报“校准坐标当前不在目标窗口上”。
+
+只读排查（未点击）：
+
+```text
+目标窗口：无畏契约登录器  hwnd=0x2D11A2  PID=35168  class=Chrome_WidgetWin_1
+          exe=D:\ACLOS\Launcher\无畏契约登录器.exe  integrity=未知（OpenProcess 拒绝访问）
+坐标控件：Edit             hwnd=0x5411D8  PID=45592  title=''
+          exe=D:\ACLOS\Launcher\resources\app.asar.unpacked\node_modules\
+              @tencent\tencent-games-api\build\Release\TASLogin64.exe
+进程树：  45592 (TASLogin64.exe) → 35168 (无畏契约登录器.exe)
+```
+
+结论：真正的账号/密码输入框在启动器的**子进程** `TASLogin64.exe` 中，是一个独立的顶层 `Edit`；
+旧检查要求根窗口 hwnd == 启动器 hwnd，因此误拒。点击这个 Edit 后 `GetForegroundWindow()`
+也会返回该 Edit，而不是启动器顶层窗口——这同样解释了 PR #5 之前的 `foreground_lost` 误判。
+
+修复：
+
+- 新增 `process_table` / `is_descendant_process` / `process_label`（Toolhelp 快照），按进程树接受目标后代进程。
+- `_validate_point_on_target`：接受目标本身、同进程、目标后代进程；拒绝无关上层窗口。按实际输入控件进程做完整性校验。
+- `foreground_matches`：目标本身/同进程/后代进程的窗口在前台都算“焦点在目标登录流程内”，不再把 TASLogin64 Edit 当成“前台被抢”。
+- `_verify_field_focus`：支持子进程原生 Edit 的线程焦点校验。
+- 目标父进程 `OpenProcess` 被拒（WinError 5）时不再直接阻断登录；改由实际输入控件进程的完整性决定，避免保护进程误伤。
+- 新增 2 个单元测试；共 **63 tests OK**。
+
+### 验证状态
+
+- 63 个单元测试通过；离屏 UI 冒烟通过；打包后冒烟通过。
+- **未**再向用户桌面发送真实点击/键盘（遵守“不控制我电脑”）；需要用户用新 EXE 复测。
+- 当前启动器窗口客户区可能已被用户缩放（1728x1080 → 1152x720）；复测前需按当前尺寸重新校准，否则会提示 `calibration_stale`。
