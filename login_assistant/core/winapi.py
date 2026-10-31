@@ -168,6 +168,8 @@ USER32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
 USER32.ScreenToClient.restype = wintypes.BOOL
 USER32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
 USER32.GetCursorPos.restype = wintypes.BOOL
+USER32.WindowFromPoint.argtypes = [POINT]
+USER32.WindowFromPoint.restype = wintypes.HWND
 USER32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
 USER32.GetGUIThreadInfo.restype = wintypes.BOOL
 USER32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
@@ -533,6 +535,111 @@ def get_cursor_pos() -> tuple[int, int]:
 
 def get_foreground_info(include_integrity: bool = True) -> WindowInfo | None:
     return get_window_info(get_foreground_window(), include_integrity=include_integrity)
+
+
+@dataclass(frozen=True)
+class PointWindowInfo:
+    child_hwnd: int
+    root_hwnd: int
+    child_class: str
+    root: WindowInfo | None
+
+    @property
+    def root_title(self) -> str:
+        return self.root.title if self.root else "（无窗口）"
+
+    @property
+    def root_class(self) -> str:
+        return self.root.class_name if self.root else ""
+
+    @property
+    def root_pid(self) -> int:
+        return self.root.pid if self.root else 0
+
+
+def get_root_window(hwnd: int) -> int:
+    if not hwnd:
+        return 0
+    return int(USER32.GetAncestor(hwnd, GA_ROOT) or hwnd)
+
+
+def window_at_point(x: int, y: int) -> PointWindowInfo:
+    """返回屏幕物理坐标下最上层窗口的根窗口（只读，不点击）。"""
+    child = int(USER32.WindowFromPoint(POINT(int(x), int(y))) or 0)
+    if not child:
+        return PointWindowInfo(0, 0, "", None)
+    root_hwnd = get_root_window(child)
+    child_class = get_class_name(child)
+    root = get_window_info(root_hwnd, include_integrity=False)
+    return PointWindowInfo(child, root_hwnd, child_class, root)
+
+
+def foreground_matches(hwnd: int) -> bool:
+    """前台窗口等于目标，或目标的一个子窗口（同一根窗口）在前台。"""
+    fg = get_foreground_window()
+    if not fg:
+        return False
+    if fg == int(hwnd):
+        return True
+    return get_root_window(fg) == int(hwnd)
+
+
+def wait_for_foreground(hwnd: int, timeout_ms: int = 800) -> tuple[bool, int]:
+    deadline = time.monotonic() + max(0.05, timeout_ms / 1000.0)
+    last = get_foreground_window()
+    while True:
+        if foreground_matches(hwnd):
+            return True, get_foreground_window()
+        if time.monotonic() >= deadline:
+            return False, last
+        time.sleep(0.04)
+        last = get_foreground_window()
+
+
+@dataclass
+class ForegroundReport:
+    ok: bool
+    foreground: int
+    foreground_info: WindowInfo | None
+    recovered: bool
+    focus_message: str = ""
+    detail: str = ""
+
+    @property
+    def brief(self) -> str:
+        info = self.foreground_info
+        if info is None:
+            return f"hwnd=0x{self.foreground:X}（无法读取）"
+        return f"{info.title!r} class={info.class_name!r} PID={info.pid} hwnd=0x{info.hwnd:X}"
+
+
+def ensure_foreground(hwnd: int, timeout_ms: int = 800) -> ForegroundReport:
+    """检查目标是否在前台；若被短暂抢占，尝试重新聚焦。
+
+    返回实际前台窗口信息，便于把“被谁抢走”写进错误/日志，而不是笼统说用户动了鼠标。
+    """
+    if foreground_matches(hwnd):
+        fg = get_foreground_window()
+        return ForegroundReport(True, fg, get_window_info(fg, include_integrity=False), False)
+    stolen = get_foreground_window()
+    stolen_info = get_window_info(stolen, include_integrity=False)
+    focus = focus_window(hwnd, timeout_ms=timeout_ms)
+    ok, fg = wait_for_foreground(hwnd, timeout_ms=timeout_ms)
+    info = get_window_info(fg, include_integrity=False) if fg else None
+    return ForegroundReport(
+        ok=ok,
+        foreground=fg,
+        foreground_info=info,
+        recovered=ok,
+        focus_message=focus.message,
+        detail=(
+            f"前台曾被 {stolen_info.title!r} (class={stolen_info.class_name!r}, PID={stolen_info.pid}, "
+            f"hwnd=0x{stolen_info.hwnd:X}) 抢占；"
+            + ("已重新聚焦目标" if ok else f"重新聚焦失败：{focus.message}")
+        )
+        if stolen_info is not None
+        else ("已重新聚焦目标" if ok else f"重新聚焦失败：{focus.message}"),
+    )
 
 
 def get_keyboard_layout_for_window(hwnd: int) -> int:

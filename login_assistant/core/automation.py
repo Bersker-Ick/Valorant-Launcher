@@ -469,6 +469,114 @@ def _verify_field_focus(element: Element, hwnd: int) -> None:
     )
 
 
+WRONG_CONTROL_TYPES = {
+    50000,  # Button
+    50002,  # CheckBox
+    50005,  # Hyperlink
+    50006,  # Image
+    50007,  # ListItem
+    50013,  # RadioButton
+    50020,  # Text
+    50024,  # TreeItem
+    50029,  # DataItem
+}
+
+
+def _validate_point_on_target(hwnd: int, point: tuple[int, int], label: str, steps: list[str]) -> None:
+    """点击前用 WindowFromPoint 确认坐标当前确实属于目标窗口。"""
+    under = winapi.window_at_point(point[0], point[1])
+    root = under.root
+    if root is None or root.hwnd != int(hwnd):
+        actual = (
+            f"{root.title!r} class={root.class_name!r} PID={root.pid} hwnd=0x{root.hwnd:X}"
+            if root is not None
+            else "无窗口"
+        )
+        raise AutomationError(
+            "point_not_on_target",
+            "校准坐标当前不在目标窗口上",
+            f"{label}坐标 {point} 现在落在 {actual}。\n"
+            "这通常是因为登录器被其他窗口遮挡、窗口移动/缩放，或校准点已过期。\n"
+            "请关闭遮挡窗口、还原登录器后重新校准；工具不会在这个坐标上乱点。",
+        )
+    _log_step(
+        steps,
+        None,
+        f"点击前检查 {label}: 坐标 {point} → 子窗口 {under.child_class or '未知'} / "
+        f"根窗口 {root.title!r} hwnd=0x{root.hwnd:X}",
+    )
+
+
+def _validate_control_under_point(
+    session: UiaSession | None,
+    point: tuple[int, int],
+    kind: str,
+    label: str,
+    steps: list[str],
+) -> None:
+    """只读地检查坐标下的 UIA 控件类型，避免把按钮/链接当成输入框。"""
+    if session is None:
+        return
+    try:
+        element = session.element_from_point(point[0], point[1])
+        if element is None:
+            _log_step(steps, None, f"UIA ElementFromPoint 在 {label} 坐标处没有返回元素")
+            return
+        info = element.info()
+        control_type = info.control_type
+        name = (info.name or "").strip()
+        _log_step(
+            steps,
+            None,
+            f"点击前 UIA 检查 {label}: 类型={control_type} name={name[:40]!r} class={info.class_name!r}",
+        )
+        if kind in {"account", "password"}:
+            if control_type in WRONG_CONTROL_TYPES:
+                raise AutomationError(
+                    "point_wrong_control",
+                    "校准坐标不在输入框上",
+                    f"{label}坐标 {point} 落在控件类型 {control_type}"
+                    + (f"（{name[:60]!r}）" if name else "")
+                    + "，看起来不是输入框。\n请重新校准该点，避免把账号密码输入到按钮/链接上。",
+                )
+            if control_type == 50004:  # Edit
+                if kind == "account" and info.is_password:
+                    raise AutomationError(
+                        "point_wrong_control",
+                        "账号框坐标落在密码框上",
+                        "请重新校准账号框坐标。",
+                    )
+                if kind == "password" and not info.is_password:
+                    _log_step(steps, None, "UIA 未把密码框标记为 IsPassword；按坐标继续，但请留意焦点")
+        elif kind == "login":
+            if control_type in {50004, 50002, 50013}:  # Edit / CheckBox / RadioButton
+                raise AutomationError(
+                    "point_wrong_control",
+                    "登录按钮坐标落在输入控件上",
+                    f"登录按钮坐标 {point} 落在控件类型 {control_type}，不是按钮。请重新校准登录按钮。",
+                )
+    except AutomationError:
+        raise
+    except Exception as exc:
+        _log_step(steps, None, f"UIA 坐标检查失败（{type(exc).__name__}），退回窗口根检查")
+        return
+
+
+def _require_foreground(hwnd: int, phase: str, steps: list[str]) -> None:
+    report = winapi.ensure_foreground(hwnd, timeout_ms=1000)
+    if not report.ok:
+        raise AutomationError(
+            "foreground_lost",
+            "前台焦点被其他窗口抢占",
+            f"{phase}后，当前前台是 {report.brief}。\n"
+            f"{report.detail}\n\n"
+            "工具已尝试重新聚焦目标但失败。请关闭抢占前台的窗口后重试；"
+            "如果目标已经跳转到新窗口，请刷新目标并重新校准。",
+        )
+    if report.recovered:
+        _log_step(steps, None, f"{phase}后前台曾被 {report.brief} 抢占；{report.detail}")
+
+
 def _click_field(
     sender: InputSender,
     hwnd: int,
@@ -478,6 +586,8 @@ def _click_field(
     steps: list[str],
     *,
     clicks: int = 1,
+    session: UiaSession | None = None,
+    kind: str = "field",
 ) -> None:
     if not _in_virtual_screen(point):
         raise AutomationError(
@@ -485,22 +595,31 @@ def _click_field(
             "输入框坐标无效",
             f"{label}的坐标 {point} 不在虚拟桌面范围内，可能是窗口已最小化/移动。",
         )
+    _validate_point_on_target(hwnd, point, label, steps)
+    _validate_control_under_point(session, point, kind, label, steps)
     result = sender.click_screen(point[0], point[1], clicks=clicks)
     if not result.ok:
         raise AutomationError("sendinput", "点击目标输入框失败", result.detail)
     time.sleep(0.06)
-    if winapi.get_foreground_window() != hwnd:
+    report = winapi.ensure_foreground(hwnd, timeout_ms=900)
+    if not report.ok:
         raise AutomationError(
             "foreground_lost",
-            "目标窗口失去前台焦点",
-            f"点击{label}后前台窗口已改变，已中止输入。",
+            "前台焦点被其他窗口抢占",
+            f"点击{label}后，当前前台是 {report.brief}。\n"
+            f"{report.detail}\n\n"
+            "工具已尝试重新聚焦目标但失败。请关闭抢占前台的窗口后重试；"
+            "如果点击位置不是输入框，请重新校准。",
         )
+    if report.recovered:
+        _log_step(steps, None, f"点击{label}后前台曾被抢占；{report.detail}")
     if element is not None:
         try:
             element.set_focus()
             time.sleep(0.04)
         except Exception:
             pass
+        _require_foreground(hwnd, f"聚焦{label}", steps)
         _verify_field_focus(element, hwnd)
     else:
         info = winapi.target_focus_info(hwnd)
@@ -626,7 +745,17 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                 account_payload = bytearray(account_keep)
                 baseline = _snapshot(session, request.hwnd, plan)
 
-                _click_field(sender, request.hwnd, plan.account_point, plan.account_element, "账号框", steps, clicks=3)
+                _click_field(
+                    sender,
+                    request.hwnd,
+                    plan.account_point,
+                    plan.account_element,
+                    "账号框",
+                    steps,
+                    clicks=3 if plan.source == "uia" else 1,
+                    session=session,
+                    kind="account",
+                )
                 sender.clear_field()
                 report = sender.type_bytes(account_payload, cancel=request.cancel.is_set if request.cancel else None)
                 if report.aborted:
@@ -635,8 +764,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                     raise AutomationError("sendinput", "账号输入不完整", "SendInput 未能发送全部字符。")
                 _log_step(steps, request.progress, f"账号输入完成（{report.sent_chars} 个字符）")
                 time.sleep(0.10)
-                if winapi.get_foreground_window() != request.hwnd:
-                    raise AutomationError("foreground_lost", "输入过程中焦点丢失", "账号输入后目标窗口失去前台焦点，已中止。")
+                _require_foreground(request.hwnd, "账号输入", steps)
 
                 account_len_after = _wait_account_length(plan.account_element, 0.7)
                 if account_len_after is not None:
@@ -660,7 +788,17 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         )
 
                 if attempt_verdict is None:
-                    _click_field(sender, request.hwnd, plan.password_point, plan.password_element, "密码框", steps, clicks=3)
+                    _click_field(
+                        sender,
+                        request.hwnd,
+                        plan.password_point,
+                        plan.password_element,
+                        "密码框",
+                        steps,
+                        clicks=3 if plan.source == "uia" else 1,
+                        session=session,
+                        kind="password",
+                    )
                     sender.clear_field()
                     password_report = sender.type_bytes(password, cancel=request.cancel.is_set if request.cancel else None)
                     password = None  # type_bytes 已覆写
@@ -670,8 +808,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         raise AutomationError("sendinput", "密码输入不完整", "SendInput 未能发送全部字符。")
                     _log_step(steps, request.progress, f"密码输入完成（{password_report.sent_chars} 个字符，内容不记录）")
                     time.sleep(0.10)
-                    if winapi.get_foreground_window() != request.hwnd:
-                        raise AutomationError("foreground_lost", "输入过程中焦点丢失", "密码输入后目标窗口失去前台焦点，已中止。")
+                    _require_foreground(request.hwnd, "密码输入", steps)
 
                     if plan.account_element is not None:
                         try:
@@ -700,6 +837,14 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         if request.cancel is not None and request.cancel.is_set():
                             raise AutomationError("cancelled", "已取消", "提交前被取消。")
                         if plan.login_point is not None:
+                            _validate_point_on_target(request.hwnd, plan.login_point, "登录按钮", steps)
+                            _validate_control_under_point(
+                                session,
+                                plan.login_point,
+                                "login",
+                                "登录按钮",
+                                steps,
+                            )
                             _log_step(
                                 steps,
                                 request.progress,
