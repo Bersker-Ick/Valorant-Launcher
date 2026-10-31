@@ -144,7 +144,7 @@ py -3.13 -m unittest discover -s tests -v
 ### 实现
 
 - `requirements.txt`：仅 `PySide6`；PyInstaller 仅构建期。
-- `build.bat`：依赖检查（已安装则跳过网络）→ 65 个测试（PR8 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
+- `build.bat`：依赖检查（已安装则跳过网络）→ 66 个测试（PR9 后）→ `LoginAssistant.spec`（onefile/windowed + Qt DLL/插件过滤）→ offscreen 冒烟测试。
 - `LoginAssistant.spec`：在 Analysis 后按文件名过滤 `opengl32sw.dll`、QtQuick/Qml/Pdf/Network/OpenGL/Svg、翻译、图片格式/样式/TLS 插件等，仅保留 QtCore/QtGui/QtWidgets、qwindows/qoffscreen 平台插件与 Python 运行库。
 - `assets/app.ico` / `assets/app.png`：QPainter 生成的多尺寸图标。
 - `build_support/version_info.txt`：产品名/版本/说明。
@@ -196,6 +196,7 @@ QT_QPA_PLATFORM=offscreen dist\LoginAssistant.exe --smoke-test
 | 3 后修复 | `fix/taslogin64-child-window` | [#6](https://github.com/Bersker-Ick/Valorant-Launcher/pull/6) |
 | 3 后修复 | `fix/password-focus-style-check` | [#7](https://github.com/Bersker-Ick/Valorant-Launcher/pull/7) |
 | 3 后功能 | `feat/uia-password-write` | [#8](https://github.com/Bersker-Ick/Valorant-Launcher/pull/8) |
+| 3 后修复 | `fix/account-length-unknown` | [#9](https://github.com/Bersker-Ick/Valorant-Launcher/pull/9) |
 
 > PR 使用堆叠分支（stage-2 基于 stage-1，stage-3 基于 stage-2），便于逐阶段审查；合并顺序 1 → 2 → 3。
 
@@ -389,3 +390,45 @@ UIA 未把密码框标记为 IsPassword
 
 - `ValuePattern.SetValue` 可能只更新可访问性值，不触发控件自身的输入校验/按钮状态；需要实测登录结果。
 - 密码字符串会以 BSTR 形式短暂存在于 UIA 调用栈/目标进程；工具不读取它，但无法保证目标进程不缓存。
+
+---
+
+## 后续修复（PR #9）— 账号长度误判跳过密码阶段
+
+用户反馈：UIA 探测可写，但登录仍失败，工具没有切换到密码框就结束。
+
+### 日志证据（02:24）
+
+```text
+02:24:26 已点击账号框，焦点控件=0x5A1238
+02:24:27 账号输入完成（9 个字符）
+02:24:28 IME 已恢复
+02:24:28 按策略自动重试 1 次
+02:24:30 第 2 次：同样输入账号后结束
+02:24:32 结果：input_not_delivered
+```
+
+没有出现：
+- `点击前检查 密码框`
+- `密码框 UIA ValuePattern`
+- `密码已通过 UIA ValuePattern 写入`
+
+只读检查同一个账号 Edit（TASLogin64 PID 49448, hwnd `0x5A1238`）：
+`GetWindowTextLengthW=0`，`WM_GETTEXT` 返回空串，但界面上账号文字存在。
+说明 TASLogin64 的 Edit 不响应跨进程 `WM_GETTEXT`。
+
+PR #7 新增的账号长度校验把空串当成 0，误判“账号没有输入”，因此直接 `input_not_delivered`，
+在密码阶段前中止，UIA 写入根本没有执行。
+
+### 修复
+
+- `_read_hwnd_account_length`：跨进程文本读取为空 → `None`（未知），不再当成 0。
+- 账号长度未知时跳过长度校验，继续密码阶段；不误报 `input_not_delivered`。
+- `_snapshot`、密码后账号框检查统一使用该 helper。
+- 新增空文本/正常文本测试；共 **66 tests OK**。
+
+### 复测注意
+
+- 当前启动器客户区是 1152x720，校准保存的是 1728x1080；必须先重新校准，否则 `calibration_stale`。
+- 这次修复后才会真正执行 UIA 写入；如果仍失败，日志应出现 `密码框 UIA ValuePattern` 和
+  `密码已通过 UIA ValuePattern 写入`，据此判断是控件拒绝还是启动器忽略 UIA 值。

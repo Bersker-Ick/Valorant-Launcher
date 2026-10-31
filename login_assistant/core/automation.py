@@ -239,6 +239,20 @@ def _in_virtual_screen(point: tuple[int, int]) -> bool:
     return left <= point[0] < left + width and top <= point[1] < top + height
 
 
+def _read_hwnd_account_length(hwnd: int) -> int | None:
+    """跨进程读取非密码 Edit 的文本长度；空文本视为“未知”而不是 0。
+
+    TASLogin64 的 Edit 不响应 WM_GETTEXT（返回空串），但我们不能据此判定
+    账号输入失败——否则会在输入密码前错误中止。真正的空值由 UIA 值判断。
+    """
+    if not hwnd:
+        return None
+    text = winapi.read_window_text_message(hwnd, max_chars=1024)
+    if not text:
+        return None
+    return len(text)
+
+
 def _read_account_length(element: Element | None) -> int | None:
     """读取非密码账号框的字符长度（绝不读取密码框）。
 
@@ -264,10 +278,12 @@ def _read_account_length(element: Element | None) -> int | None:
     except Exception:
         native = 0
     if native:
-        text = winapi.read_window_text_message(native, max_chars=1024)
-        if text is not None:
-            return len(text)
-    return len(value) if value is not None else None
+        native_len = _read_hwnd_account_length(native)
+        if native_len is not None:
+            return native_len
+    # UIA 明确返回空串、native 也读不到：无法区分“真的为空”和“读取被拒绝”，
+    # 返回 None 让调用方跳过长度校验，避免误判为 input_not_delivered。
+    return None
 
 
 def _wait_account_length(element: Element | None, timeout_s: float = 0.7) -> int | None:
@@ -433,9 +449,7 @@ def _snapshot(
         if plan.account_element is not None and not plan.account_element.is_password:
             account_len = _read_account_length(plan.account_element)
         elif plan.account_hwnd:
-            text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
-            if text is not None:
-                account_len = len(text)
+            account_len = _read_hwnd_account_length(plan.account_hwnd)
     return UiSnapshot(
         at=now,
         window_exists=True,
@@ -966,9 +980,9 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                 if account_len_after is None and plan.account_hwnd:
                     deadline_len = time.monotonic() + 0.7
                     while time.monotonic() < deadline_len:
-                        text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
-                        if text is not None:
-                            account_len_after = len(text)
+                        length = _read_hwnd_account_length(plan.account_hwnd)
+                        if length is not None:
+                            account_len_after = length
                             if account_len_after > 0:
                                 break
                         time.sleep(0.12)
@@ -1073,9 +1087,7 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         except Exception:
                             value_len = None
                     elif plan.account_hwnd:
-                        text = winapi.read_window_text_message(plan.account_hwnd, max_chars=1024)
-                        if text is not None:
-                            value_len = len(text)
+                        value_len = _read_hwnd_account_length(plan.account_hwnd)
                     if value_len is not None:
                         _log_step(
                             steps,
