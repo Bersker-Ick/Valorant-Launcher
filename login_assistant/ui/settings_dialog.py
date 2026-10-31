@@ -153,6 +153,15 @@ class SettingsDialog(QDialog):
         self.input_only = QCheckBox("仅输入不点击（调试：不点击登录按钮，也不自动重试）")
         layout.addWidget(self.input_only)
 
+        self.password_uia = QCheckBox("密码用 UIA ValuePattern 写入（实验，非键盘）")
+        layout.addWidget(self.password_uia)
+        uia_hint = HintLabel(
+            "当密码框拒绝 SendInput 时，可尝试通过 Windows UI Automation 直接写入。"
+            "这不是键盘模拟；密码框可能不支持或只读，失败会明确报错。密码值不会写入日志。"
+        )
+        uia_hint.setStyleSheet("color:#b45309;")
+        layout.addWidget(uia_hint)
+
         retry_hint = MutedLabel(
             "登录失败最多自动重试 1 次；检测到明确的密码错误/验证码提示时会直接转为手动确认，"
             "避免触发风控计数。"
@@ -174,6 +183,7 @@ class SettingsDialog(QDialog):
         self.block_input.setChecked(self.config.input.block_input)
         self.auto_enter.setChecked(self.config.input.auto_enter)
         self.input_only.setChecked(self.config.input.input_only_no_click)
+        self.password_uia.setChecked(self.config.input.password_use_uia)
 
     def _collect_match(self) -> WindowMatchConfig:
         return WindowMatchConfig(
@@ -216,6 +226,7 @@ class SettingsDialog(QDialog):
         self.block_input.setChecked(defaults.input.block_input)
         self.auto_enter.setChecked(defaults.input.auto_enter)
         self.input_only.setChecked(defaults.input.input_only_no_click)
+        self.password_uia.setChecked(defaults.input.password_use_uia)
         self.test_result.setText("已恢复默认值（尚未保存）")
         self.test_result.setStyleSheet("color:#6b7280;")
 
@@ -249,6 +260,7 @@ class SettingsDialog(QDialog):
         self.config.input.block_input = self.block_input.isChecked()
         self.config.input.auto_enter = self.auto_enter.isChecked()
         self.config.input.input_only_no_click = self.input_only.isChecked()
+        self.config.input.password_use_uia = self.password_uia.isChecked()
         try:
             self.config.normalize()
             save_config(self.config)

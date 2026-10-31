@@ -65,6 +65,7 @@ class AutomationOptions:
     block_input: bool = False
     auto_enter: bool = True
     input_only_no_click: bool = False
+    password_use_uia: bool = False
     verify_wait_ms: int = 3500
     retry_cooldown_ms: int = 1200
     focus_timeout_ms: int = 800
@@ -79,6 +80,7 @@ class AutomationOptions:
             block_input=data.block_input,
             auto_enter=data.auto_enter,
             input_only_no_click=data.input_only_no_click,
+            password_use_uia=data.password_use_uia,
             verify_wait_ms=data.verify_wait_ms,
             retry_cooldown_ms=data.retry_cooldown_ms,
             focus_timeout_ms=data.focus_timeout_ms,
@@ -858,6 +860,45 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                 + (f"，按钮：{plan.button_name}" if plan.button_name else "，提交方式：Enter"),
             )
 
+            if options.password_use_uia:
+                if session is None:
+                    raise AutomationError(
+                        "uia_value_unsupported",
+                        "无法使用 UIA 写入密码",
+                        "当前没有可用的 UI Automation 会话。",
+                    )
+                if plan.password_element is None:
+                    try:
+                        plan.password_element = session.element_from_point(*plan.password_point)
+                    except Exception as exc:
+                        raise AutomationError(
+                            "uia_value_unsupported",
+                            "无法取得密码框 UIA 元素",
+                            f"ElementFromPoint 失败：{type(exc).__name__}: {exc}",
+                        ) from exc
+                if plan.password_element is None:
+                    raise AutomationError(
+                        "uia_value_unsupported",
+                        "密码框没有 UIA 元素",
+                        "坐标处没有可访问的 UI Automation 元素，无法使用 UIA 写入。请重新校准或改回 SendInput。",
+                    )
+                state = plan.password_element.value_pattern_state()
+                _log_step(steps, request.progress, f"密码框 UIA ValuePattern：{state.summary}")
+                if not state.available:
+                    raise AutomationError(
+                        "uia_value_unsupported",
+                        "密码框不支持 UIA 写入",
+                        f"{state.summary}\n该控件没有暴露 ValuePattern，UIA 写入不可用。",
+                    )
+                if state.read_only is True:
+                    raise AutomationError(
+                        "uia_value_readonly",
+                        "密码框的 UIA ValuePattern 是只读的",
+                        "该控件明确报告 IsReadOnly=True，UIA 写入不会生效。请改用手动输入。",
+                    )
+                if state.read_only is None:
+                    _log_step(steps, request.progress, "无法读取 ValuePattern.IsReadOnly；将尝试写入，失败会中止")
+
             expected_len: int | None = len(account_keep) if plan.account_element is not None else None
             ime = winapi.detach_ime(request.hwnd)
             _log_step(steps, request.progress, ime.detail)
@@ -963,23 +1004,67 @@ def run_login(request: AutomationRequest) -> AutomationReport:
                         session=session,
                         kind="password",
                     )
-                    sender.clear_field()
-                    password_report = sender.type_bytes(password, cancel=request.cancel.is_set if request.cancel else None)
-                    password = None  # type_bytes 已覆写
-                    if password_report.aborted:
-                        raise AutomationError("cancelled", "已取消", "输入密码时被取消。")
-                    if password_report.sent_chars != password_report.total_chars:
-                        raise AutomationError("sendinput", "密码输入不完整", "SendInput 未能发送全部字符。")
-                    _log_step(steps, request.progress, f"密码输入完成（{password_report.sent_chars} 个字符，内容不记录）")
-                    time.sleep(0.10)
-                    _require_foreground(request.hwnd, "密码输入", steps)
-                    if plan.password_hwnd and not winapi.control_has_focus(plan.password_hwnd):
-                        raise AutomationError(
-                            "focus_wrong_field",
-                            "密码框未保持键盘焦点",
-                            f"密码输入后，控件 hwnd=0x{plan.password_hwnd:X} 不再持有焦点；"
-                            "密码可能没有进入密码框。请重新校准密码框，或手动输入密码。",
+                    if options.password_use_uia:
+                        element = plan.password_element
+                        if element is None:
+                            raise AutomationError(
+                                "uia_value_unsupported",
+                                "密码框没有 UIA 元素",
+                                "无法使用 UIA 写入密码。请重新校准或关闭 UIA 写入。",
+                            )
+                        password_len = len(password)
+                        try:
+                            password_text = bytes(password).decode("ascii")
+                        except UnicodeDecodeError as exc:
+                            raise AutomationError(
+                                "uia_value_unsupported",
+                                "密码包含非 ASCII 字符",
+                                "UIA 写入当前只接受 ASCII 密码。",
+                            ) from exc
+                        try:
+                            element.set_value(password_text)
+                        except UiaError as exc:
+                            raise AutomationError(
+                                "uia_value_write_failed",
+                                "UIA 写入密码失败",
+                                f"ValuePattern.SetValue 返回错误：{exc}\n"
+                                "这不是键盘输入失败；该控件可能禁止 UIA 写入。",
+                            ) from exc
+                        finally:
+                            password_text = ""
+                        wipe(password)
+                        password = None
+                        _log_step(
+                            steps,
+                            request.progress,
+                            f"密码已通过 UIA ValuePattern 写入（非键盘，{password_len} 个字符，内容不记录）",
                         )
+                        time.sleep(0.10)
+                        _require_foreground(request.hwnd, "UIA 写入密码", steps)
+                        if plan.password_hwnd and not winapi.control_has_focus(plan.password_hwnd):
+                            _log_step(
+                                steps,
+                                None,
+                                "UIA 写入后密码框未保持键盘焦点；ValuePattern 写入不依赖焦点，继续",
+                            )
+                    else:
+                        sender.clear_field()
+                        password_report = sender.type_bytes(password, cancel=request.cancel.is_set if request.cancel else None)
+                        password = None  # type_bytes 已覆写
+                        if password_report.aborted:
+                            raise AutomationError("cancelled", "已取消", "输入密码时被取消。")
+                        if password_report.sent_chars != password_report.total_chars:
+                            raise AutomationError("sendinput", "密码输入不完整", "SendInput 未能发送全部字符。")
+                        _log_step(steps, request.progress, f"密码输入完成（{password_report.sent_chars} 个字符，内容不记录）")
+                        time.sleep(0.10)
+                        _require_foreground(request.hwnd, "密码输入", steps)
+                        if plan.password_hwnd and not winapi.control_has_focus(plan.password_hwnd):
+                            raise AutomationError(
+                                "focus_wrong_field",
+                                "密码框未保持键盘焦点",
+                                f"密码输入后，控件 hwnd=0x{plan.password_hwnd:X} 不再持有焦点；"
+                                "密码可能没有进入密码框。请重新校准密码框，或手动输入密码。",
+                            )
 
                     value_len: int | None = None
                     if plan.account_element is not None:

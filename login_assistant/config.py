@@ -31,6 +31,7 @@ class InputSettings:
     block_input: bool = False
     auto_enter: bool = True
     input_only_no_click: bool = False
+    password_use_uia: bool = False
     verify_wait_ms: int = 3500
     retry_cooldown_ms: int = 1200
     focus_timeout_ms: int = 800
@@ -43,6 +44,7 @@ class InputSettings:
             "block_input": self.block_input,
             "auto_enter": self.auto_enter,
             "input_only_no_click": self.input_only_no_click,
+            "password_use_uia": self.password_use_uia,
             "verify_wait_ms": self.verify_wait_ms,
             "retry_cooldown_ms": self.retry_cooldown_ms,
             "focus_timeout_ms": self.focus_timeout_ms,
@@ -57,7 +59,7 @@ class InputSettings:
         for name in ("delay_min_ms", "delay_max_ms", "verify_wait_ms", "retry_cooldown_ms", "focus_timeout_ms", "max_attempts"):
             if isinstance(data.get(name), int):
                 setattr(cfg, name, int(data[name]))
-        for name in ("block_input", "auto_enter", "input_only_no_click"):
+        for name in ("block_input", "auto_enter", "input_only_no_click", "password_use_uia"):
             if isinstance(data.get(name), bool):
                 setattr(cfg, name, data[name])
         return cfg

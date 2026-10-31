@@ -74,6 +74,23 @@ class ProbeWorker(QThread):
         self.result.emit(data)
 
 
+class PasswordProbeWorker(QThread):
+    """只读探测密码框的 UIA ValuePattern 能力；不读取、不写入值。"""
+
+    result = Signal(object)
+
+    def __init__(self, point: tuple[int, int]) -> None:
+        super().__init__()
+        self.point = point
+
+    def run(self) -> None:
+        try:
+            data = uia.probe_password_value(self.point)
+        except Exception as exc:
+            data = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        self.result.emit(data)
+
+
 class DiagnosticsPanel(QWidget):
     def __init__(
         self,
@@ -90,6 +107,7 @@ class DiagnosticsPanel(QWidget):
         self._target_info: WindowInfo | None = None
         self._worker: SelfTestWorker | None = None
         self._probe_worker: ProbeWorker | None = None
+        self._password_probe_worker: PasswordProbeWorker | None = None
         self._build()
         self._timer = QTimer(self)
         self._timer.setInterval(800)
@@ -132,11 +150,16 @@ class DiagnosticsPanel(QWidget):
         self.probe_button.clicked.connect(self._run_probe)
         self.probe_button.setEnabled(False)
         header.addWidget(self.probe_button)
+        self.password_probe_button = button("密码框 UIA 写入探测")
+        self.password_probe_button.clicked.connect(self._run_password_probe)
+        self.password_probe_button.setEnabled(False)
+        header.addWidget(self.password_probe_button)
         card.add_layout(header)
 
         hint = HintLabel(
             "目标由“标题正则 + 类名正则”或手动选窗确定；这里显示目标句柄、类名、"
             "PID、进程路径与完整性级别。UIA 探测只读取可访问性结构，不读取任何输入值。"
+            "“密码框 UIA 写入探测”只检查 ValuePattern 是否可用/是否只读，不会写入。"
         )
         card.add(hint)
 
@@ -278,6 +301,7 @@ class DiagnosticsPanel(QWidget):
                 label.setText("—")
             self.v_source.setText(source or "—")
             self.probe_button.setEnabled(False)
+            self.password_probe_button.setEnabled(False)
             return
         self.target_badge.set_state("已找到", "ok")
         self.v_hwnd.setText(info.hwnd_hex)
@@ -295,6 +319,7 @@ class DiagnosticsPanel(QWidget):
             if own.rid is not None and info.integrity.rid > own.rid:
                 self.v_integrity.setStyleSheet("color:#b91c1c;")
         self.probe_button.setEnabled(True)
+        self.password_probe_button.setEnabled(True)
 
     def _run_probe(self) -> None:
         if self._target_info is None:
@@ -312,6 +337,76 @@ class DiagnosticsPanel(QWidget):
     def _on_probe_finished(self) -> None:
         self.probe_button.setEnabled(self._target_info is not None)
         self.probe_button.setText("UIA 探测")
+        self.password_probe_button.setEnabled(self._target_info is not None)
+
+    def _run_password_probe(self) -> None:
+        if self._target_info is None:
+            QMessageBox.information(self, "密码框 UIA 探测", "请先找到目标窗口。")
+            return
+        if self.is_busy():
+            return
+        cal = self.config.calibration
+        if not cal.is_complete or cal.password is None:
+            QMessageBox.information(
+                self,
+                "密码框 UIA 探测",
+                "还没有完整的校准坐标。请先在主界面完成账号/密码/登录按钮校准。",
+            )
+            return
+        origin_x, origin_y, width, height = winapi.get_client_rect_screen(self._target_info.hwnd)
+        point_cfg = cal.password
+        if abs(point_cfg.client_w - width) > 2 or abs(point_cfg.client_h - height) > 2:
+            QMessageBox.warning(
+                self,
+                "窗口尺寸已变化",
+                f"校准时的客户区为 {point_cfg.client_w}x{point_cfg.client_h}，"
+                f"当前为 {width}x{height}。\n请重新校准后再探测密码框。",
+            )
+            return
+        point = (origin_x + point_cfg.x, origin_y + point_cfg.y)
+        self.password_probe_button.setEnabled(False)
+        self.password_probe_button.setText("探测中…")
+        self._password_probe_worker = PasswordProbeWorker(point)
+        self._password_probe_worker.result.connect(self._on_password_probe_result)
+        self._password_probe_worker.finished.connect(self._on_password_probe_finished)
+        self._password_probe_worker.start()
+
+    def _on_password_probe_finished(self) -> None:
+        self.password_probe_button.setEnabled(self._target_info is not None)
+        self.password_probe_button.setText("密码框 UIA 写入探测")
+
+    def _on_password_probe_result(self, data: object) -> None:
+        if not isinstance(data, dict) or not data.get("ok"):
+            error = data.get("error") if isinstance(data, dict) else "未知错误"
+            QMessageBox.warning(self, "密码框 UIA 探测失败", str(error))
+            return
+        info = data.get("info")
+        state = data.get("value_pattern")
+        lines: list[str] = []
+        if info is not None:
+            lines.append(f"控件类型：{info.control_type}")
+            lines.append(f"类名：{info.class_name!r}")
+            lines.append(f"名称：{info.name!r}")
+            lines.append(f"PID：{info.process_id}")
+            lines.append(f"原生 hwnd：0x{info.native_window_handle:X}" if info.native_window_handle else "原生 hwnd：—")
+            lines.append(f"UIA IsPassword：{info.is_password}")
+            lines.append(f"启用：{info.is_enabled}")
+        if state is not None:
+            lines.append(f"ValuePattern：{state.summary}")
+        if state is not None and state.available and state.read_only is False:
+            conclusion = "该密码框支持 UIA 写入。可在“设置 → 输入”勾选“密码用 UIA ValuePattern 写入（实验）”后试登录。"
+        elif state is not None and state.available and state.read_only is True:
+            conclusion = "该密码框的 ValuePattern 是只读的，UIA 写入不可用；只能手动输入。"
+        else:
+            conclusion = "该密码框没有可用的 ValuePattern；UIA 写入不可用。"
+        lines.append("")
+        lines.append(conclusion)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("密码框 UIA 写入探测")
+        box.setText("只读探测完成；未读取、未写入任何密码值。")
+        box.setDetailedText("\n".join(lines))
+        box.exec()
 
     def _on_probe_result(self, data: object) -> None:
         if not isinstance(data, dict) or not data.get("ok"):

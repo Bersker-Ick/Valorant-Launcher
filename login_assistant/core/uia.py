@@ -153,6 +153,24 @@ class ElementInfo:
         return self.rect.center if self.rect and self.rect.valid else None
 
 
+@dataclass(frozen=True)
+class ValuePatternState:
+    """ValuePattern 的只读能力描述；不包含控件的值。"""
+
+    available: bool
+    read_only: bool | None
+    hresult: int = 0
+    error: str = ""
+
+    @property
+    def summary(self) -> str:
+        if not self.available:
+            return f"不支持 ValuePattern（HRESULT=0x{self.hresult & 0xFFFFFFFF:08X}）"
+        if self.read_only is None:
+            return f"ValuePattern 可用，但读取 IsReadOnly 失败（HRESULT=0x{self.hresult & 0xFFFFFFFF:08X}）"
+        return "ValuePattern 可用，" + ("只读" if self.read_only else "可写")
+
+
 _ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
 _ole32.CoInitializeEx.restype = ctypes.c_long
 _ole32.CoUninitialize.argtypes = []
@@ -373,6 +391,71 @@ class Element:
     def set_focus(self) -> bool:
         hr = _call(self.ptr, 3, ctypes.c_long, [])
         return not _hr_failed(hr)
+
+    def value_pattern_state(self) -> ValuePatternState:
+        """只读探测 ValuePattern 是否可用/是否只读；绝不读取控件值。"""
+        pattern = ctypes.c_void_p()
+        hr = _call(
+            self.ptr,
+            16,
+            ctypes.c_long,
+            [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+            UIA_ValuePatternId,
+            ctypes.byref(pattern),
+        )
+        if _hr_failed(hr) or not pattern.value:
+            return ValuePatternState(
+                False,
+                None,
+                int(hr),
+                f"GetCurrentPattern(ValuePattern) 失败 (0x{int(hr) & 0xFFFFFFFF:08X})",
+            )
+        try:
+            read_only = wintypes.BOOL(0)
+            hr = _call(
+                pattern.value,
+                5,  # IUIAutomationValuePattern::get_CurrentIsReadOnly
+                ctypes.c_long,
+                [ctypes.POINTER(wintypes.BOOL)],
+                ctypes.byref(read_only),
+            )
+            if _hr_failed(hr):
+                return ValuePatternState(True, None, int(hr), "读取 IsReadOnly 失败")
+            return ValuePatternState(True, bool(read_only.value), 0, "")
+        finally:
+            _call(pattern.value, 2, ctypes.c_ulong, [])
+
+    def set_value(self, value: str) -> None:
+        """通过 ValuePattern.SetValue 写值；不是键盘输入，密码值不落日志。"""
+        pattern = ctypes.c_void_p()
+        hr = _call(
+            self.ptr,
+            16,
+            ctypes.c_long,
+            [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+            UIA_ValuePatternId,
+            ctypes.byref(pattern),
+        )
+        if _hr_failed(hr) or not pattern.value:
+            raise UiaError(
+                f"控件不支持 ValuePattern (0x{int(hr) & 0xFFFFFFFF:08X})",
+                int(hr),
+            )
+        try:
+            hr = _call(
+                pattern.value,
+                3,  # IUIAutomationValuePattern::SetValue
+                ctypes.c_long,
+                [ctypes.c_wchar_p],
+                value,
+            )
+            if _hr_failed(hr):
+                raise UiaError(
+                    f"ValuePattern.SetValue 失败 (0x{int(hr) & 0xFFFFFFFF:08X})",
+                    int(hr),
+                )
+        finally:
+            _call(pattern.value, 2, ctypes.c_ulong, [])
 
     def value(self) -> str | None:
         """读取 ValuePattern 的当前值；密码框返回 None 且绝不调用。"""
@@ -635,4 +718,19 @@ def probe(hwnd: int) -> dict[str, object]:
             "edits": [element.info() for element in edits[:20]],
             "buttons": [element.info() for element in buttons[:20]],
             "texts": [text.name.strip() for text in texts[:40] if text.name.strip()],
+        }
+
+
+def probe_password_value(point: tuple[int, int]) -> dict[str, object]:
+    """只读探测坐标下密码控件的 ValuePattern 能力；不读取控件值。"""
+    with UiaSession() as session:
+        element = session.element_from_point(point[0], point[1])
+        if element is None:
+            return {"ok": False, "error": "坐标处没有 UIA 元素"}
+        info = element.info()
+        state = element.value_pattern_state()
+        return {
+            "ok": True,
+            "info": info,
+            "value_pattern": state,
         }
