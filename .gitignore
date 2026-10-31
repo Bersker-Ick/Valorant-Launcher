@@ -14,3 +14,7 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+build_bat_log.txt
+build_log.txt
+.exe_smoke_*
+.tmp_ui*
