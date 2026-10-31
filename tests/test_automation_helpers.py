@@ -7,6 +7,7 @@ from login_assistant.core.automation import (
     AutomationError,
     _choose_login_button,
     _read_account_length,
+    _read_hwnd_account_length,
     _require_foreground,
     _validate_control_under_point,
     _validate_point_on_target,
@@ -43,7 +44,17 @@ class AutomationHelperTest(unittest.TestCase):
         element.value_result = "hello"
         self.assertEqual(_read_account_length(element), 5)
         element.value_result = ""
-        self.assertEqual(_read_account_length(element), 0)
+        self.assertIsNone(_read_account_length(element))
+
+    def test_empty_native_account_text_is_unknown(self) -> None:
+        original = winapi.read_window_text_message
+        try:
+            winapi.read_window_text_message = lambda hwnd, max_chars=1024: ""  # type: ignore[assignment]
+            self.assertIsNone(_read_hwnd_account_length(123))
+            winapi.read_window_text_message = lambda hwnd, max_chars=1024: "abc"  # type: ignore[assignment]
+            self.assertEqual(_read_hwnd_account_length(123), 3)
+        finally:
+            winapi.read_window_text_message = original  # type: ignore[assignment]
 
     def test_password_never_read(self) -> None:
         element = FakeElement("password", Rect(0, 0, 10, 10), password=True)

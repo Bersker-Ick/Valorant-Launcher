@@ -241,7 +241,7 @@ build.bat
 脚本会：
 
 1. 检查/安装 PySide6 与 PyInstaller（依赖已安装时跳过网络安装）；
-2. 运行 65 个单元测试；
+2. 运行 66 个单元测试；
 3. 使用 `LoginAssistant.spec` 以 `--onefile --windowed` 打包，并过滤掉未使用的 Qt DLL/插件
    （`opengl32sw.dll`、QtQuick/Qml/Pdf/Network、翻译、图片格式插件等）；
 4. 用 `QT_QPA_PLATFORM=offscreen` 对打包后的 EXE 做离屏冒烟测试；
@@ -387,7 +387,7 @@ tools/
   selftest_input.py      命令行自检（需要可用的前台桌面）
   mock_login.py          本机 Win32 模拟登录窗口（仅开发测试）
   ui_snapshot.py         离屏 UI 截图（不显示窗口）
-tests/                   65 个单元测试
+tests/                   66 个单元测试
 LoginAssistant.spec      PyInstaller 打包配置（过滤未使用 Qt DLL/插件）
 build.bat / run_dev.bat / run_tests.bat
 ```
