@@ -212,7 +212,7 @@ def run_notepad_selftest(
             result.detail = f"客户区 {width}x{height}"
             return result
 
-        click = sender.click_screen(x + width // 2, y + height // 2)
+        click = sender.click_screen(x + width // 2, y + height // 2, clicks=3)
         steps.append(f"点击文本区：{click.detail}")
         time.sleep(0.08)
         if winapi.get_foreground_window() != target.hwnd:

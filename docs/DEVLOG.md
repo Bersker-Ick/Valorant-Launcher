@@ -218,3 +218,12 @@ dist\LoginAssistant.exe --smoke-test
 ```
 
 > 涉及真实窗口/输入的命令（`tools\selftest_input.py`、`tools\mock_login.py`、实际登录）必须由用户在自己的桌面上执行。
+
+---
+
+## 后续修复（PR #4）
+
+- **问题**：mock 输入实测时观察到 Ctrl+A/Delete 清空在个别焦点状态下不可靠，第二次尝试可能把新内容追加到旧内容后面。该实测在用户要求停止桌面控制前进行，未完成完整链路。
+- **修复**：`run_notepad_selftest`/`automation` 的字段点击改为三击（选中整段/整行），随后仍发送 Ctrl+A + Backspace + Delete 双保险；仅影响自检/输入前的清空，不改变判定、重试上限或安全边界。
+- **验证**：单元测试通过；未再进行桌面注入验证。用户可在记事本自检中观察“实际”是否完全等于 `Abc123!@#`。
+- PR：[#4](https://github.com/Bersker-Ick/Valorant-Launcher/pull/4)
