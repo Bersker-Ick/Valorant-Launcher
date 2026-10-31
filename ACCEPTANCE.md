@@ -7,7 +7,7 @@
 ## 0. 前置
 
 - [ ] Windows 10/11 x64，Python 3.11+，`py -3.13 -m pip install -r requirements.txt`
-- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 55+ 个测试，0 失败）
+- [ ] `py -3.13 -m unittest discover -s tests -v` 全部通过（当前 57 个测试，0 失败）
 - [ ] `build.bat` 成功，生成 `dist\LoginAssistant.exe`
 - [ ] 准备一个**测试账号**（不要用主账号），或使用 `tools\mock_login.py` 作为安全靶子
 

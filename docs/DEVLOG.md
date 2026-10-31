@@ -51,7 +51,7 @@
 
 ```text
 py -3.13 -m unittest discover -s tests -v
-→ 55 tests OK（阶段 1 结束时的数量）
+→ 核心测试通过（DPAPI/keymap/store/redact）
 ```
 
 - DPAPI 往返：ASCII/UTF-8/长串/篡改失败/错误 entropy 失败。
@@ -114,7 +114,7 @@ py -3.13 -m unittest discover -s tests -v
 
 ```text
 py -3.13 -m unittest discover -s tests -v
-→ 57 tests OK（含 no-network / automation helpers）
+→ 55 tests OK（含 automation helpers；阶段 3 加 no-network 后 57）
 ```
 
 - `verify.py` 判定用例覆盖：window_closed、minimized、credential_error、challenge_required、success_text、login_error、progress_button_disabled、input_not_delivered、partial_input、title_changed、uncertain、input_rejected_suspected。
